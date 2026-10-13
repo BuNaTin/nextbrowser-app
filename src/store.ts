@@ -106,6 +106,7 @@ import { appendAppData, loadJson, saveJson } from "./lib/storage";
 import { apiBaseUrl, discordUrl } from "./constants";
 import { accountLoginURL } from "./lib/accountAuth";
 import { markWorkspaceSetupDone, requiresWorkspaceSetup } from "./lib/workspaceSetup";
+import { rememberGuideSessionStarted } from "./lib/guideQuickStart";
 import { publicScriptJavaScript } from "./lib/scriptCommands";
 import { validateEntityName } from "./lib/entityValidation";
 import { moveProfileToWorkspace as moveProfileBetweenWorkspaces } from "./lib/workspaceProfiles";
@@ -3589,9 +3590,8 @@ export const useStore = create<State>((set, get) => {
           if (profileSessions[name]) profileSessions[name] = { ...profileSessions[name], status: statuses[name] };
         }
       }
-      const owner = get().accountOwnerId;
-      if (owner && get().workspaces.some((workspace) => workspace.profileNames.some((name) => statuses[name] === "running"))) {
-        localStorage.setItem(`guide:session-started:${owner}`, "1");
+      if (get().workspaces.some((workspace) => workspace.profileNames.some((name) => statuses[name] === "running"))) {
+        rememberGuideSessionStarted(get().accountOwnerId);
       }
       set({ statuses, profileSessions, profileIdentities });
     } catch {
@@ -3839,7 +3839,7 @@ export const useStore = create<State>((set, get) => {
         });
         if (profileOperationEpoch.get(n) !== operation) return;
         verifyingProfileStarts.delete(n);
-        if (get().accountOwnerId) localStorage.setItem(`guide:session-started:${get().accountOwnerId}`, "1");
+        rememberGuideSessionStarted(get().accountOwnerId);
         await get().loadProfiles();
         settleTransientStatus(n, "starting");
         trackTiming("profile_start_completed", startedAt, { scope: "named", status: get().statuses[n] ?? "unknown" });
@@ -4288,10 +4288,13 @@ export const useStore = create<State>((set, get) => {
     trackEvent("agent_switched", { from_agent: get().agentId, to_agent: id });
     localStorage.setItem("lastAgent", id);
     set({ agentId: id, startupAgentSuggestion: undefined });
-    get().ensureConversation(id);
+    // The first message creates a project. Creating one here put an empty
+    // "Chat 1" into workspaces that should have no projects yet.
+    if (get().conversationsForAgent(id).length) get().ensureConversation(id);
     get().reconcileQueues();
     get().startConsumer(id);
-    void get().recheckLogin(id);
+    // Connect the newly selected agent so it does not sit at "Offline".
+    void get().authorizeAgent({ deferMissingNextctlPrompt: true }).then(() => get().recheckLogin(id));
   },
 
   ensureConversation: (agentId: string) => {

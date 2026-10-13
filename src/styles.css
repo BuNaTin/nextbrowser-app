@@ -2102,6 +2102,29 @@ body.is-resizing-sidebar {
   min-width: 0;
   flex: 0 0 auto;
 }
+.profile-meta-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.profile-meta-line .profile-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.profile-meta-line .profile-badges {
+  justify-content: flex-start;
+}
+.profile-meta-line .profile-toolset-logo,
+.profile-meta-line .profile-toolset-logo img {
+  width: 14px;
+  height: 14px;
+}
+.profile-meta-line .badge {
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 15px;
+}
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .dot.green { background: var(--green); }
 .dot.orange { background: var(--warn); }
@@ -9043,6 +9066,13 @@ pre,
 /* The floating copy only — smaller than the Settings row so it stays unobtrusive. */
 .ui-scale-control:not(.ui-scale-control-settings) {
   transform: scale(0.82);
+}
+/* In the sidebar footer, above the nextctl and agent status row. */
+.ui-scale-control.ui-scale-control-inline {
+  position: static;
+  transform: none;
+  align-self: flex-start;
+  margin: 0 12px 6px;
 }
 /* Same control, inline as a settings row instead of a floating pill. */
 .ui-scale-control-settings {

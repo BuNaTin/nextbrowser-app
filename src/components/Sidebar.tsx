@@ -1,4 +1,4 @@
-import { type DragEvent, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { personalProxyUsers, useStore, type ManualProxyProfileInput } from "../store";
 import { agentById } from "../agents";
@@ -83,6 +83,8 @@ function multiloginCreationError(error: unknown, kind: MultiloginProfileKind): s
 interface SidebarProps {
   onOpenAgentSettings: () => void;
   onHome: () => void;
+  /** Rendered above the footer, e.g. the interface size control, so nothing floats over the footer. */
+  footerAccessory?: ReactNode;
 }
 
 const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: string }> = [
@@ -94,7 +96,7 @@ const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: string }> = [
 
 const SIDEBAR_OPEN_SECTION_KEY = "sidebar.openSection";
 
-export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
+export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: SidebarProps) {
   const s = useStore();
   const [menuProfile, setMenuProfile] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -1599,6 +1601,7 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
         )}
       </div>
       {logoutError && <div className="sidebar-account-error" role="alert">{logoutError}</div>}
+      {footerAccessory}
       <div className="nextctl-footer muted small">
         <Icon name="terminal" size={12} />
         <span>nextctl {s.nextctlVersion || "..."}</span>
@@ -2801,10 +2804,11 @@ function ProfileRow({
         <span className="profile-title-line">
           <span className="profile-name" title={displayName || name}><HighlightedName text={displayName || name} query={searchQuery} /></span>
         </span>
+        {/* Badges share the status line so a narrow sidebar keeps the name readable. */}
+        <span className="profile-meta-line">
         <span className="profile-meta">
           {metaOverride ?? (occupiedBy ? `In use · ${occupiedBy}` : status === "starting" ? "Starting and verifying" : ip ? `${status} · ${ip}` : status)}
         </span>
-      </span>
       <span className="profile-badges">
         {occupiedBy && <span className="profile-in-use-badge">In use</span>}
         {country && (
@@ -2827,6 +2831,8 @@ function ProfileRow({
             {manualScheme.toUpperCase()}
           </span>
         )}
+      </span>
+        </span>
       </span>
       </button>
       <div className="profile-actions">

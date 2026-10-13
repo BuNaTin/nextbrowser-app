@@ -361,3 +361,30 @@ it("does not ask for first-run defaults after the account deletes its last works
   expect(useStore.getState().workspaces).toEqual([]);
   expect(useStore.getState().workspaceSetupRequired).toBe(false);
 });
+
+it("drops a workspace deleted on another device instead of uploading it again", async () => {
+  const storage = new Map<string, string>([["syncedWorkspaceIds:v1", JSON.stringify(["gone", "kept"])]]);
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  });
+  const keptCloud = { id: "kept", name: "kept", revision: 2, created_at: new Date(1).toISOString(), updated_at: new Date(5).toISOString(), document: { profileNames: [], profileToolsets: {} } };
+  bridge.invoke.mockImplementation(async (command: string) => {
+    if (command === "workspaces_list") return { workspaces: [keptCloud] };
+    if (command === "projects_list") return { projects: [] };
+    return { revision: 1 };
+  });
+  const { useStore } = await import("./store");
+  // A fresh start: the workspace is only in the local cache, revisions are empty.
+  useStore.setState({
+    authed: true, projectsSyncing: false, workspaceRevisions: {}, activeWorkspaceId: "gone",
+    workspaces: [{ ...workspace("gone"), updatedAt: 10 }, { ...workspace("kept"), profileNames: [], updatedAt: 5 }],
+    conversations: [{ id: "gone-chat", workspaceId: "gone", agent: "claude", messages: [], createdAt: 1, updatedAt: 1 }],
+  } as any);
+  await useStore.getState().syncProjects();
+  expect(bridge.invoke).not.toHaveBeenCalledWith("workspace_put", expect.objectContaining({ id: "gone" }));
+  expect(useStore.getState().workspaces.map((item) => item.id)).toEqual(["kept"]);
+  expect(useStore.getState().conversations).toEqual([]);
+  expect(JSON.parse(storage.get("deletedWorkspaceIds:v1") || "[]")).toContain("gone");
+});

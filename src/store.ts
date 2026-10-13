@@ -949,6 +949,25 @@ function rememberDeletedWorkspace(id: string): void {
     console.warn("[workspace_delete] could not persist deletion marker", error);
   }
 }
+// Workspaces this device has seen in the cloud list. One that later disappears
+// from the authoritative list was deleted on another device and must not be
+// uploaded again from the local cache, also after an app restart.
+const SYNCED_WORKSPACE_IDS_KEY = "syncedWorkspaceIds:v1";
+function loadSyncedWorkspaceIds(): Set<string> {
+  try {
+    const ids = JSON.parse(localStorage.getItem(SYNCED_WORKSPACE_IDS_KEY) || "[]");
+    return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+function saveSyncedWorkspaceIds(ids: Set<string>): void {
+  try {
+    localStorage.setItem(SYNCED_WORKSPACE_IDS_KEY, JSON.stringify([...ids]));
+  } catch (error) {
+    console.warn("[workspace_sync] could not persist synced workspace ids", error);
+  }
+}
 const verifyingProfileStarts = new Set<string>();
 const BOOTSTRAP_FOREGROUND_WAIT_MS = 12_000;
 // Stamps which account's data the on-disk caches (workspaces.json and
@@ -4867,6 +4886,21 @@ export const useStore = create<State>((set, get) => {
         if (index < 0) workspaces.push(normalized);
         else if (normalized.updatedAt >= workspaces[index].updatedAt) workspaces[index] = normalized;
       }
+      const syncedWorkspaceIds = loadSyncedWorkspaceIds();
+      const deletedElsewhere = new Set(workspaces
+        .filter((workspace) => !remoteWorkspaceById.has(workspace.id)
+          && syncedWorkspaceIds.has(workspace.id))
+        .map((workspace) => workspace.id));
+      for (const id of deletedElsewhere) {
+        rememberDeletedWorkspace(id);
+        syncedWorkspaceIds.delete(id);
+        delete workspaceRevisions[id];
+      }
+      if (deletedElsewhere.size) {
+        workspaces = workspaces.filter((workspace) => !deletedElsewhere.has(workspace.id));
+        conversations = conversations.filter((conversation) => !deletedElsewhere.has(conversation.workspaceId || ""));
+      }
+      for (const id of remoteWorkspaceById.keys()) syncedWorkspaceIds.add(id);
       for (const workspace of workspaces) {
         if (epoch !== accountEpoch || !get().authed) return;
         if (deletingWorkspaceIds.has(workspace.id) || deletedWorkspaceIds.has(workspace.id)) continue;
@@ -4932,6 +4966,7 @@ export const useStore = create<State>((set, get) => {
         }
         if (saved) workspaceRevisions[workspace.id] = saved.revision;
       }
+      saveSyncedWorkspaceIds(syncedWorkspaceIds);
       if (unownedWorkspaces.length) {
         // A foreign account's entity must never remain in the active cache.
         // Keeping it locally would make the next mutation try to upload it

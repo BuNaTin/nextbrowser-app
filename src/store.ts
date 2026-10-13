@@ -1213,6 +1213,21 @@ async function guardAgainstForeignAccountCache(): Promise<void> {
 }
 
 let workspaceMutationQueue: Promise<unknown> = Promise.resolve();
+// Profiles this device removed from a workspace whose cloud write has not
+// been confirmed yet. A revision-conflict merge must not restore them.
+const pendingWorkspaceProfileRemovals = new Map<string, Set<string>>();
+function noteWorkspaceProfileRemovals(previous: Workspace[], next: Workspace[]): void {
+  for (const before of previous) {
+    const after = next.find((workspace) => workspace.id === before.id);
+    const remaining = new Set(after?.profileNames ?? []);
+    const removed = before.profileNames.filter((name) => !remaining.has(name));
+    if (!removed.length) continue;
+    const pending = pendingWorkspaceProfileRemovals.get(before.id) ?? new Set<string>();
+    for (const name of removed) pending.add(name);
+    pendingWorkspaceProfileRemovals.set(before.id, pending);
+  }
+}
+
 function persistWorkspaceMutation(transform: (workspaces: Workspace[]) => Workspace[]): Promise<void> {
   const pending = workspaceMutationQueue.then(async () => {
     const deadline = Date.now() + 30_000;
@@ -1224,6 +1239,7 @@ function persistWorkspaceMutation(transform: (workspaces: Workspace[]) => Worksp
     if (state.projectsSyncing) throw new Error("Cloud sync is in progress. Retry this workspace change when it finishes.");
     const previous = state.workspaces;
     const workspaces = transform(previous);
+    noteWorkspaceProfileRemovals(previous, workspaces);
     useStore.setState({ workspaces });
     try {
       // The backend is authoritative. Do not leave a mutation only in the
@@ -4958,13 +4974,19 @@ export const useStore = create<State>((set, get) => {
               createdAt: Date.parse(latest.created_at),
               updatedAt: Date.parse(latest.updated_at),
             };
-            candidate = mergeWorkspaceAfterRevisionConflict(workspace, remote);
+            candidate = mergeWorkspaceAfterRevisionConflict(workspace, remote, {
+              removedLocally: pendingWorkspaceProfileRemovals.get(workspace.id),
+              assignedElsewhere: new Set(workspaces.filter((item) => item.id !== workspace.id).flatMap((item) => item.profileNames)),
+            });
             const index = workspaces.findIndex((item) => item.id === candidate.id);
             if (index >= 0) workspaces[index] = candidate;
             saved = await saveWorkspace(candidate, latest.revision);
           }
         }
-        if (saved) workspaceRevisions[workspace.id] = saved.revision;
+        if (saved) {
+          workspaceRevisions[workspace.id] = saved.revision;
+          pendingWorkspaceProfileRemovals.delete(workspace.id);
+        }
       }
       saveSyncedWorkspaceIds(syncedWorkspaceIds);
       if (unownedWorkspaces.length) {
@@ -5487,6 +5509,7 @@ export const useStore = create<State>((set, get) => {
     const previous = state.workspaces;
     const workspaces = moveProfileBetweenWorkspaces(previous, profileName, workspaceId, now());
     if (workspaces === previous) return;
+    noteWorkspaceProfileRemovals(previous, workspaces);
     await saveWorkspaces(workspaces);
     set({ workspaces });
     try {

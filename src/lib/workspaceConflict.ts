@@ -27,13 +27,23 @@ export function isWorkspaceNotFound(error: unknown): boolean {
 /**
  * Preserve both devices' profile associations when retrying an optimistic
  * workspace update. The local edit wins only for the same profile key, while
- * profiles introduced remotely are retained.
+ * profiles introduced remotely are retained. A remote profile is not brought
+ * back when this device removed it from the workspace or now keeps it in a
+ * different workspace, so a delete or a move survives the retry.
  */
-export function mergeWorkspaceAfterRevisionConflict(local: Workspace, remote: Workspace): Workspace {
+export function mergeWorkspaceAfterRevisionConflict(
+  local: Workspace,
+  remote: Workspace,
+  options: { removedLocally?: ReadonlySet<string>; assignedElsewhere?: ReadonlySet<string> } = {},
+): Workspace {
+  const localNames = new Set(local.profileNames);
+  const dropped = (name: string) => !localNames.has(name)
+    && (options.removedLocally?.has(name) || options.assignedElsewhere?.has(name));
+  const keep = <T>(entries: Record<string, T>) => Object.fromEntries(Object.entries(entries).filter(([name]) => !dropped(name)));
   return {
     ...local,
-    profileNames: [...new Set([...remote.profileNames, ...local.profileNames])],
-    profileToolsets: { ...remote.profileToolsets, ...local.profileToolsets },
-    profileProxyIds: { ...(remote.profileProxyIds ?? {}), ...(local.profileProxyIds ?? {}) },
+    profileNames: [...new Set([...remote.profileNames.filter((name) => !dropped(name)), ...local.profileNames])],
+    profileToolsets: { ...keep(remote.profileToolsets), ...local.profileToolsets },
+    profileProxyIds: { ...keep(remote.profileProxyIds ?? {}), ...(local.profileProxyIds ?? {}) },
   };
 }

@@ -1525,6 +1525,26 @@ async function assertClawbrowserRuntimeIdle(nextctlBin) {
     },
   });
 }
+async function releaseHasWindowsSetup(root) {
+  const entries = await fs.readdir(root, { recursive: true }).catch(() => []);
+  return entries.some((entry) => path.basename(String(entry)).toLowerCase() === "setup.exe");
+}
+async function installClawbrowserWithNextctl(nextctlBin) {
+  let result = await run(nextctlBin, ["update", "--browser-only", "--format", "json"], { NBC_AUTO_UPDATE: "0" }, { timeoutMs: 30 * 60 * 1000 });
+  if (result.code !== 0 && /unknown flag: --browser-only/.test(`${result.stderr}${result.stdout}`)) {
+    // nextctl releases before --browser-only update the browser as part of a full update.
+    result = await run(nextctlBin, ["update", "--format", "json"], { NBC_AUTO_UPDATE: "0" }, { timeoutMs: 30 * 60 * 1000 });
+  }
+  if (result.code !== 0) {
+    let message = "";
+    try {
+      message = String(JSON.parse(result.stdout || "{}")?.error?.message || "").trim();
+    } catch {
+      // Use the bounded command output below.
+    }
+    throw new Error(message || String(result.stderr || result.stdout || "").trim().slice(0, 800) || "nextctl could not install Clawbrowser.");
+  }
+}
 async function updateClawbrowserRuntime(latestVersion) {
   const runtimeRoot = nextbrowserRuntimeRoot();
   const release = clawbrowserReleaseAsset(process.platform, process.arch, latestVersion);
@@ -1545,6 +1565,14 @@ async function updateClawbrowserRuntime(latestVersion) {
           await downloadFileStreaming(release.url, archive);
           await extractArchive(archive, release.kind, extracted);
           const source = await findClawbrowserReleaseAsset(extracted);
+          if (!source && process.platform === "win32" && await releaseHasWindowsSetup(extracted)) {
+            // Windows releases now ship setup.exe instead of a portable
+            // clawbrowser.exe. nextctl runs that installer, normalizes the
+            // install and records its version, so let it do the install.
+            await assertClawbrowserRuntimeIdle(nextctlBin);
+            await installClawbrowserWithNextctl(nextctlBin);
+            return;
+          }
           if (!source) throw new Error("The Clawbrowser release did not contain a browser executable.");
           await replaceClawbrowserRelease(source, release, {
             beforeActivate: () => assertClawbrowserRuntimeIdle(nextctlBin),
@@ -1553,7 +1581,13 @@ async function updateClawbrowserRuntime(latestVersion) {
           await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
         }
       },
-      readInstalledVersion: () => installedClawbrowserVersion(runtimeRoot),
+      // nextctl may install outside the app's data folder (the Windows setup
+      // installs into %LOCALAPPDATA%), so read the version of the browser the
+      // app will actually launch before falling back to the managed copy.
+      readInstalledVersion: async () => {
+        const executable = resolveBrowserRuntime({ platform: process.platform, homeDir: home(), env: process.env, runtimeRoot });
+        return (executable ? await installedClawbrowserVersion(runtimeRoot, executable) : "") || installedClawbrowserVersion(runtimeRoot);
+      },
     });
   } finally {
     clawbrowserRuntimeUpdateActive = false;

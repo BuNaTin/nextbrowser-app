@@ -33,7 +33,7 @@ test("detects a managed Windows Clawbrowser executable", (t) => {
   assert.equal(resolveBrowserRuntime({ platform: "win32", homeDir: root, env: {}, runtimeRoot: path.join(root, "runtime") }), executable);
 });
 
-test("detects the managed Linux Clawbrowser release folder", (t) => {
+test("detects the managed Linux Clawbrowser release folder", { skip: process.platform === "win32" && "POSIX executable bits" }, (t) => {
   const root = fixture(t);
   const executable = path.join(root, "runtime", "data", "Clawbrowser", "clawbrowser");
   fs.mkdirSync(path.dirname(executable), { recursive: true });

@@ -5887,6 +5887,9 @@ code { background: var(--surface-4); padding: 1px 5px; border-radius: 4px; }
   line-height: 1;
   text-align: center;
 }
+/* Windows has no flag emoji, so countryFlag() returns nothing there; drop the
+   empty slot instead of leaving a gap before the country name. */
+.country-select-flag:empty { display: none; }
 .country-select-name {
   min-width: 0;
   flex: 1;

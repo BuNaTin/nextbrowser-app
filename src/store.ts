@@ -123,7 +123,7 @@ import {
   serializeScripts,
   serializeUsage,
 } from "./lib/persistence";
-import { scheduleDue } from "./lib/scheduleDue";
+import { DAILY_WEEKDAYS, scheduleDue } from "./lib/scheduleDue";
 import { availableWorkspaceProfiles, resolveScheduledProfile } from "./lib/scheduleProfile";
 import type {
   AppTab,
@@ -7307,7 +7307,7 @@ export const useStore = create<State>((set, get) => {
       agent: get().agentId,
       hour: partial.hour,
       minute: partial.minute,
-      weekdays: partial.weekdays.length ? partial.weekdays : [2, 3, 4, 5, 6],
+      weekdays: partial.weekdays.length ? partial.weekdays : [...DAILY_WEEKDAYS],
       enabled: true,
       conversationId: partial.conversationId,
     };

@@ -106,6 +106,7 @@ const {
   installRuntimeUpdateWithVerification,
 } = require("./browser-runtime-updates.cjs");
 const { createMultiloginCredentialStore, exchangeAutomationToken } = require("./multilogin-credential.cjs");
+const { openLinuxTerminal } = require("./terminal-launch.cjs");
 const { multiloginProfileCreateArgs, parseMultiloginProfiles, parseMultiloginCreatedMobileProfile, parseMultiloginCreatedProfile, parseMultiloginFolders } = require("./multilogin-profiles.cjs");
 const { multiloginAccountFromTokens } = require("./multilogin-account.cjs");
 const { MULTILOGIN_DOWNLOAD_URL, resolveMultiloginApp } = require("./multilogin-app.cjs");
@@ -1993,12 +1994,7 @@ async function invokeCommand(command, args = {}, sender) {
       } else if (process.platform === "win32") {
         spawn("cmd.exe", ["/D", "/S", "/C", "start", "Nextbrowser agent login", "cmd", "/k", bin, ...loginArgs], { detached: true, stdio: "ignore", windowsHide: false }).unref();
       } else {
-        const commandText = [bin, ...loginArgs].map(quotePosix).join(" ");
-        let started = false;
-        for (const terminal of ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"]) try {
-          spawn(terminal, terminal === "gnome-terminal" ? ["--", "sh", "-lc", commandText] : ["-e", "sh", "-lc", commandText], { detached: true, stdio: "ignore" }).unref(); started = true; break;
-        } catch { /* try next */ }
-        if (!started) throw new Error("No terminal emulator found.");
+        await openLinuxTerminal([bin, ...loginArgs].map(quotePosix).join(" "), { spawn });
       }
       return null;
     }

@@ -1581,7 +1581,12 @@ async function installCamoufoxRuntime(latestVersion) {
     for (const candidate of baseCandidates) {
       if (!(await camoufoxPythonSupported(candidate))) continue;
       created = await run(candidate, ["-m", "venv", venv], {}, { timeoutMs: 120_000 });
-      break;
+      if (created.code === 0) break;
+      // Debian and Ubuntu ship Python without ensurepip unless python3-venv is
+      // installed. Fall back to the uv-managed Python instead of failing.
+      console.warn("[camoufox_install] system Python could not create a venv; using uv", (created.stderr || created.stdout || "").trim().slice(0, 300));
+      await fs.rm(venv, { recursive: true, force: true });
+      created = null;
     }
     if (!created) {
       // A previous attempt may have created a venv with an unsupported system

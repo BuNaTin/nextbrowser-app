@@ -40,6 +40,9 @@ function dasbrowserRuntimeCandidates({ platform, homeDir, env = {}, runtimeRoot 
         path.join(root, "Dasbrowser", "dasbrowser.exe"),
         path.join(root, "DasBrowser", "Application", "Dasbrowser.exe"),
         path.join(root, "DasBrowser", "Dasbrowser.exe"),
+        // Current DasbrowserSetup.exe installs the Chromium launcher under
+        // its standard name inside the Dasbrowser folder.
+        path.join(root, "Dasbrowser", "Application", "chrome.exe"),
       );
     }
   }

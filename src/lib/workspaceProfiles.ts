@@ -26,6 +26,8 @@ export function moveProfileToWorkspace(
       profileToolsets[profileName] = toolset;
       if (proxyId) profileProxyIds[profileName] = proxyId;
     }
-    return { ...workspace, profileNames, profileToolsets, profileProxyIds, updatedAt };
+    // Keep the edit newer than the synced copy even when the local clock is
+    // behind the server clock that stamped it.
+    return { ...workspace, profileNames, profileToolsets, profileProxyIds, updatedAt: Math.max(updatedAt, workspace.updatedAt + 1) };
   });
 }

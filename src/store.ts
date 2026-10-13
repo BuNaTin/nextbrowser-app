@@ -454,6 +454,10 @@ function capStreamText(text: string): string {
 
 const uid = () => crypto.randomUUID();
 const now = () => Date.now();
+// Workspace edits are compared with server-stamped cloud copies. A plain
+// client timestamp can be older than the copy it edits when the local clock
+// lags, which made sync keep the stale cloud document and drop the edit.
+const editedAt = (previous: number) => Math.max(now(), previous + 1);
 
 function skillKey(agentId: string, entryId: string) {
   return `${agentId}:${entryId}`;
@@ -4041,7 +4045,7 @@ export const useStore = create<State>((set, get) => {
         );
         return Object.keys(profileProxyIds).length === Object.keys(current).length
           ? workspace
-          : { ...workspace, profileProxyIds, updatedAt: now() };
+          : { ...workspace, profileProxyIds, updatedAt: editedAt(workspace.updatedAt) };
       });
       if (workspaces.some((workspace, index) => workspace !== previousWorkspaces[index])) {
         await saveWorkspaces(workspaces);
@@ -4130,7 +4134,7 @@ export const useStore = create<State>((set, get) => {
       const profileProxyIds = { ...(workspace.profileProxyIds ?? {}) };
       if (connection === "personal" && options?.proxyId) profileProxyIds[name] = options.proxyId;
       else delete profileProxyIds[name];
-      return { ...workspace, profileProxyIds, updatedAt: now() };
+      return { ...workspace, profileProxyIds, updatedAt: editedAt(workspace.updatedAt) };
     });
     await saveWorkspaces(workspaces);
     set((state) => ({
@@ -4228,7 +4232,7 @@ export const useStore = create<State>((set, get) => {
         const profileProxyIds = { ...(workspace.profileProxyIds ?? {}) };
         delete profileToolsets[n];
         delete profileProxyIds[n];
-        return { ...workspace, profileNames: workspace.profileNames.filter((name) => name !== n), profileToolsets, profileProxyIds, updatedAt: Math.max(now(), workspace.updatedAt + 1) };
+        return { ...workspace, profileNames: workspace.profileNames.filter((name) => name !== n), profileToolsets, profileProxyIds, updatedAt: editedAt(workspace.updatedAt) };
       }));
     } catch (error) {
       await get().loadProfiles();
@@ -5403,7 +5407,7 @@ export const useStore = create<State>((set, get) => {
             ...workspace,
             profileToolsets: { ...workspace.profileToolsets, [profileName]: fixedToolset },
             profileProxyIds,
-            updatedAt: now(),
+            updatedAt: editedAt(workspace.updatedAt),
           };
         }
         const withoutProfile = workspace.profileNames.filter((name) => name !== profileName);
@@ -5413,7 +5417,7 @@ export const useStore = create<State>((set, get) => {
         delete profileProxyIds[profileName];
         if (workspace.id !== targetId) {
           return { ...workspace, profileNames: withoutProfile, profileToolsets: toolsets, profileProxyIds,
-            updatedAt: withoutProfile.length !== workspace.profileNames.length ? Math.max(now(), workspace.updatedAt + 1) : workspace.updatedAt };
+            updatedAt: withoutProfile.length !== workspace.profileNames.length ? editedAt(workspace.updatedAt) : workspace.updatedAt };
         }
         if (fixedProxyId) profileProxyIds[profileName] = fixedProxyId;
         return {
@@ -5421,7 +5425,7 @@ export const useStore = create<State>((set, get) => {
           profileNames: [...withoutProfile, profileName],
           profileToolsets: { ...toolsets, [profileName]: fixedToolset },
           profileProxyIds,
-          updatedAt: now(),
+          updatedAt: editedAt(workspace.updatedAt),
         };
       });
       return workspaces;
@@ -5471,7 +5475,7 @@ export const useStore = create<State>((set, get) => {
         const targetIndex = names.indexOf(beforeProfileName);
         if (targetIndex < 0) names.push(profileName);
         else names.splice(targetIndex, 0, profileName);
-        return { ...workspace, profileNames: names, updatedAt: now() };
+        return { ...workspace, profileNames: names, updatedAt: editedAt(workspace.updatedAt) };
       });
       return workspaces;
     });

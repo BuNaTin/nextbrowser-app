@@ -126,7 +126,12 @@ export function ScheduledRunsPanel({ asPage = false }: { asPage?: boolean }) {
               <div className="muted small">
                 {run.intervalMinutes ? `Every ${run.intervalMinutes} minute${run.intervalMinutes === 1 ? "" : "s"}` : `${String(run.hour).padStart(2, "0")}:${String(run.minute).padStart(2, "0")} · ${weekdaysSummary(run.weekdays)}`}
               </div>
-              {run.lastError && <div className="error small">Last run failed: {run.lastError}</div>}
+              {run.lastFiredAt && <div className="muted small">Last started {lastStarted(run.lastFiredAt)}</div>}
+              {run.lastError && (
+                <div className="error small">
+                  Could not start: {run.lastError}{run.enabled ? " It retries automatically while Nextbrowser is open." : ""}
+                </div>
+              )}
               <div className="muted small">
                 {chatTitle(run) ?? "New chat each run"}
               </div>
@@ -219,6 +224,14 @@ export function ScheduledRunsPanel({ asPage = false }: { asPage?: boolean }) {
       )}
     </div>
   );
+}
+
+function lastStarted(timestamp: number): string {
+  const date = new Date(timestamp);
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return date.toDateString() === new Date().toDateString()
+    ? `today at ${time}`
+    : `${date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} at ${time}`;
 }
 
 function since(timestamp?: number): string {

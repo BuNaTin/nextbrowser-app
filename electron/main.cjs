@@ -1382,13 +1382,29 @@ async function findClawbrowserReleaseAsset(root) {
   }
   return "";
 }
+async function removeStrayLinuxLauncher(file) {
+  try {
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || stat.size > 4096) return;
+    const text = await fs.readFile(file, "utf8");
+    if (text.includes("clawbrowser.real") && !fsSync.existsSync(path.join(path.dirname(file), "clawbrowser.real"))) await fs.rm(file);
+  } catch {
+    // Nothing to clean up.
+  }
+}
 async function replaceClawbrowserRelease(source, release, options = {}) {
   const dataDir = path.join(nextbrowserRuntimeRoot(), "data");
   await fs.mkdir(dataDir, { recursive: true });
   const isBundle = process.platform === "darwin";
+  // The Linux launcher is a script that execs clawbrowser.real next to it, so
+  // the whole release folder is installed, not the launcher alone.
+  const isFolder = process.platform === "linux";
   const target = isBundle
     ? path.join(dataDir, "Clawbrowser.app")
-    : path.join(dataDir, process.platform === "win32" ? "clawbrowser.exe" : "clawbrowser");
+    : isFolder
+      ? path.join(dataDir, "Clawbrowser")
+      : path.join(dataDir, process.platform === "win32" ? "clawbrowser.exe" : "clawbrowser");
+  const executable = isFolder ? path.join(target, "clawbrowser") : target;
   const staged = `${target}.update-${randomUUID()}`;
   const backup = `${target}.previous-${randomUUID()}`;
   let backedUp = false;
@@ -1397,6 +1413,8 @@ async function replaceClawbrowserRelease(source, release, options = {}) {
       await fs.cp(source, staged, dasbrowserAppCopyOptions());
       const signature = await run("codesign", ["--verify", "--deep", "--strict", staged], {}, { timeoutMs: 120_000 });
       if (signature.code !== 0) throw new Error("The downloaded Clawbrowser app failed macOS signature verification.");
+    } else if (isFolder) {
+      await fs.cp(path.dirname(source), staged, { recursive: true, verbatimSymlinks: true });
     } else {
       await fs.copyFile(source, staged);
       if (process.platform !== "win32") await fs.chmod(staged, 0o755);
@@ -1418,13 +1436,16 @@ async function replaceClawbrowserRelease(source, release, options = {}) {
         version: release.version,
         asset_name: release.assetName,
         archive_url: release.url,
-        browser_path: target,
+        browser_path: executable,
         source: "release-archive",
         updated_at: new Date().toISOString(),
       }, null, 2),
       "utf8",
     );
     if (backedUp) await fs.rm(backup, { recursive: true, force: true });
+    // Earlier versions copied only the Linux launcher script to the data
+    // root, where it cannot find clawbrowser.real.
+    if (isFolder) await removeStrayLinuxLauncher(path.join(dataDir, "clawbrowser"));
   } catch (error) {
     await fs.rm(staged, { recursive: true, force: true }).catch(() => undefined);
     if (backedUp) {

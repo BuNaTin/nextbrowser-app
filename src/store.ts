@@ -162,7 +162,7 @@ import {
 } from "./types";
 import type { RotationCountry } from "./lib/countryFlag";
 import { GITHUB_STARS_REFRESH_EVENT, shouldAskForGitHubStar, type GitHubStarStatus } from "./lib/githubStarReward";
-import { browserProfileContext } from "./lib/browserProfileContext";
+import { agentVisibleProfileNames, browserProfileContext } from "./lib/browserProfileContext";
 import { CONNECTOR_PROMPT_RESUMED_EVENT, type ConnectorPrompt } from "./connectorsCatalog";
 import { clearMultiloginSelection, multiloginSelectionForWorkspace, type MultiloginProfileSelection } from "./lib/multiloginSelection";
 import { cloudPhoneFromSelection, cloudPhoneSkillPrompt } from "./lib/cloudPhoneSkill";
@@ -1229,6 +1229,45 @@ function noteWorkspaceProfileRemovals(previous: Workspace[], next: Workspace[]):
   }
 }
 
+// Profiles this device has seen in its local inventory, per account. An agent
+// or the CLI can delete one outside the app; the workspace then still lists
+// it. Only a profile seen here and now gone is removed, so profiles that live
+// on another device of the same account keep their workspace assignment.
+const localProfileNamesKey = (ownerId: string) => `localProfileNamesSeen:v1:${ownerId}`;
+function pruneLocallyDeletedProfiles(current: string[]): void {
+  const state = useStore.getState();
+  const ownerId = state.accountOwnerId;
+  if (!ownerId || !state.authed) return;
+  let seen: string[] = [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(localProfileNamesKey(ownerId)) || "[]");
+    if (Array.isArray(parsed)) seen = parsed.filter((name): name is string => typeof name === "string");
+  } catch { /* start a fresh record */ }
+  try {
+    localStorage.setItem(localProfileNamesKey(ownerId), JSON.stringify(current));
+  } catch { /* pruning is best effort */ }
+  const present = new Set(current);
+  const gone = new Set(seen.filter((name) => !present.has(name)
+    && state.workspaces.some((workspace) => workspace.profileNames.includes(name))));
+  if (!gone.size) return;
+  void persistWorkspaceMutation((previous) => previous.map((workspace) => {
+    if (!workspace.profileNames.some((name) => gone.has(name))) return workspace;
+    const profileToolsets = { ...workspace.profileToolsets };
+    const profileProxyIds = { ...(workspace.profileProxyIds ?? {}) };
+    for (const name of gone) {
+      delete profileToolsets[name];
+      delete profileProxyIds[name];
+    }
+    return {
+      ...workspace,
+      profileNames: workspace.profileNames.filter((name) => !gone.has(name)),
+      profileToolsets,
+      profileProxyIds,
+      updatedAt: editedAt(workspace.updatedAt),
+    };
+  })).catch((error) => console.warn("[profile_prune] could not remove deleted profiles from workspaces", error));
+}
+
 function persistWorkspaceMutation(transform: (workspaces: Workspace[]) => Workspace[]): Promise<void> {
   const pending = workspaceMutationQueue.then(async () => {
     const deadline = Date.now() + 30_000;
@@ -1716,6 +1755,8 @@ export interface ProxyIdentity {
   country?: string;
   city?: string;
   label?: string;
+  /** The profile's configured country, used until a real check reports the exit. */
+  unverified?: boolean;
 }
 
 function proxyIdentityFromVerify(checks?: VerifyCheck[], visibleText?: string): ProxyIdentity | undefined {
@@ -2961,8 +3002,9 @@ export const useStore = create<State>((set, get) => {
       multiloginSelection,
       get().statuses,
       get().profileIdentities,
+      get().profiles,
     ) + recorderContext;
-    const browserProfiles = (itemWorkspace?.profileNames ?? []).map((name) => ({
+    const browserProfiles = agentVisibleProfileNames(itemWorkspace?.profileNames ?? [], get().profiles).map((name) => ({
       name,
       runtime: itemWorkspace?.profileToolsets[name] ?? "clawbrowser",
       running: get().statuses[name] === "running",
@@ -3544,6 +3586,7 @@ export const useStore = create<State>((set, get) => {
       }
       // Render the inventory without waiting for every browser status command.
       set({ profiles: list.profiles });
+      pruneLocallyDeletedProfiles(list.profiles.map((profile) => profile.name));
       const statuses: Record<string, string> = {};
       const profileSessions: Record<string, SessionStatus> = {};
       const profileIdentities: Record<string, ProxyIdentity> = {};
@@ -3568,7 +3611,7 @@ export const useStore = create<State>((set, get) => {
             // captured at an explicit lifecycle action and fall back to the
             // saved country label without touching the page.
             const identity = get().profileIdentities[p.name]
-              ?? (p.country ? { country: p.country } : undefined);
+              ?? (p.country ? { country: p.country, unverified: true } : undefined);
             if (identity) profileIdentities[p.name] = identity;
           } else if (get().profileIdentities[p.name]) {
             profileIdentities[p.name] = get().profileIdentities[p.name];

@@ -347,3 +347,17 @@ it("deletes the private cloud copy of a custom script", async () => {
       && (args as { args: string[] }).args[0] === "skill" && (args as { args: string[] }).args[1] === "delete");
   expect(deletedCloud).toBe(true);
 });
+
+it("does not ask for first-run defaults after the account deletes its last workspace", async () => {
+  const storage = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  });
+  const { useStore } = await import("./store");
+  useStore.setState({ accountOwnerId: "owner-a", workspaces: [workspace("a")], activeWorkspaceId: "a", conversations: [], deleteProfile: vi.fn().mockResolvedValue(undefined) });
+  await useStore.getState().deleteWorkspace("a");
+  expect(useStore.getState().workspaces).toEqual([]);
+  expect(useStore.getState().workspaceSetupRequired).toBe(false);
+});

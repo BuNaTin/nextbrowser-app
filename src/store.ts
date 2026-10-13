@@ -105,7 +105,7 @@ import type { RemoteStreamInfo } from "./remoteControl";
 import { appendAppData, loadJson, saveJson } from "./lib/storage";
 import { apiBaseUrl, discordUrl } from "./constants";
 import { accountLoginURL } from "./lib/accountAuth";
-import { requiresWorkspaceSetup } from "./lib/workspaceSetup";
+import { markWorkspaceSetupDone, requiresWorkspaceSetup } from "./lib/workspaceSetup";
 import { publicScriptJavaScript } from "./lib/scriptCommands";
 import { validateEntityName } from "./lib/entityValidation";
 import { moveProfileToWorkspace as moveProfileBetweenWorkspaces } from "./lib/workspaceProfiles";
@@ -5017,7 +5017,7 @@ export const useStore = create<State>((set, get) => {
 
       set({
         workspacesLoaded: true,
-        workspaceSetupRequired: requiresWorkspaceSetup(workspaces, conversations, activeWorkspaceId),
+        workspaceSetupRequired: requiresWorkspaceSetup(workspaces, conversations, activeWorkspaceId, get().accountOwnerId),
       });
 
       for (const conversation of conversations) {
@@ -5087,6 +5087,7 @@ export const useStore = create<State>((set, get) => {
           state.workspaces,
           state.conversations,
           state.activeWorkspaceId,
+          state.accountOwnerId,
         ),
       });
       if (retryWorkspaceSync) void get().syncProjects().catch(() => {});
@@ -5122,7 +5123,7 @@ export const useStore = create<State>((set, get) => {
       conversations,
       activeWorkspaceId: workspace.id,
       workspaceRevisions: { ...state.workspaceRevisions, [workspace.id]: saved.revision },
-      workspaceSetupRequired: requiresWorkspaceSetup(workspaces, conversations, workspace.id),
+      workspaceSetupRequired: requiresWorkspaceSetup(workspaces, conversations, workspace.id, get().accountOwnerId),
     });
     get().selectWorkspace(workspace.id);
     return workspace.id;
@@ -5142,7 +5143,7 @@ export const useStore = create<State>((set, get) => {
     if (selected) activeConvId[agentId] = selected.id;
     else delete activeConvId[agentId];
     set({ activeWorkspaceId: id, activeConvId, selectedProfile: undefined,
-      workspaceSetupRequired: requiresWorkspaceSetup(get().workspaces, get().conversations, id),
+      workspaceSetupRequired: requiresWorkspaceSetup(get().workspaces, get().conversations, id, get().accountOwnerId),
       terminalChat: selected?.chatMode === "terminal",
     });
   },
@@ -5199,6 +5200,9 @@ export const useStore = create<State>((set, get) => {
     for (const replyId of removedReplyIds) void invoke("agent_terminate", { replyId }).catch(() => {});
     for (const agent of AGENTS) localStorage.removeItem(activeConversationStorageKey(agent.id, id));
     const removedConversationIds = new Set(removedConversations.map((conversation) => conversation.id));
+    // The account owned this workspace, so first-run defaults must not come back
+    // even when it was the last one.
+    markWorkspaceSetupDone(get().accountOwnerId);
     const workspaces = get().workspaces.filter((workspace) => workspace.id !== id);
     const conversations = get().conversations.filter((conversation) => conversation.workspaceId !== id);
     const scheduledRuns = get().scheduledRuns.filter((run) => run.workspaceId !== id && !removedConversationIds.has(run.conversationId || ""));
@@ -5223,7 +5227,7 @@ export const useStore = create<State>((set, get) => {
     const profileChatOwners = Object.fromEntries(Object.entries(get().profileChatOwners)
       .filter(([, conversationId]) => !removedConversationIds.has(conversationId)));
     set({ workspaces, conversations, scheduledRuns, activeWorkspaceId, activeConvId, projectRevisions, workspaceRevisions, runtime, profileChatOwners,
-      workspaceSetupRequired: requiresWorkspaceSetup(workspaces, conversations, activeWorkspaceId),
+      workspaceSetupRequired: requiresWorkspaceSetup(workspaces, conversations, activeWorkspaceId, get().accountOwnerId),
     });
     persistSchedules(scheduledRuns);
     await Promise.all([saveWorkspaces(workspaces), persistConvs(conversations), scheduleWriteTail]);
@@ -5299,7 +5303,7 @@ export const useStore = create<State>((set, get) => {
       }
       await get().loadProfiles();
       const state = get();
-      const stillRequired = requiresWorkspaceSetup(state.workspaces, state.conversations, state.activeWorkspaceId);
+      const stillRequired = requiresWorkspaceSetup(state.workspaces, state.conversations, state.activeWorkspaceId, state.accountOwnerId);
       set({ workspaceSetupRequired: stillRequired, workspaceSetupAuto: stillRequired ? "failed" : "done" });
     } catch (error) {
       console.error("[AUTO_SETUP_FAILED]", error);

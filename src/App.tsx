@@ -1759,10 +1759,8 @@ export function App() {
       )}
       {unexpectedError && <GlobalErrorNotice error={unexpectedError} onClose={() => setUnexpectedError(undefined)} />}
       {feedbackModal}
-      {/* With the sidebar open the control sits in its footer; floating, it covered the agent status button. */}
-      {!uiScaleFloatingHidden && sidebarCollapsed && (
-        <UIScaleControl value={uiScale} onChange={setUiScale} onDismiss={dismissUiScaleFloating} />
-      )}
+      {/* The control lives in the sidebar footer. A floating copy over the collapsed rail covered the agent
+          button (and the composer when moved right), so a collapsed sidebar shows none; Settings keeps it. */}
     </div>
   );
 }

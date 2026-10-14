@@ -39,9 +39,13 @@ test("detects the managed Linux Clawbrowser release folder", { skip: process.pla
   fs.mkdirSync(path.dirname(executable), { recursive: true });
   fs.writeFileSync(executable, "#!/bin/sh\n");
   fs.chmodSync(executable, 0o755);
-  // A stray launcher copy at the data root cannot run and must not be chosen.
-  fs.writeFileSync(path.join(root, "runtime", "data", "clawbrowser"), "#!/bin/sh\n");
-  fs.chmodSync(path.join(root, "runtime", "data", "clawbrowser"), 0o755);
+  // A stray launcher copy at the data root cannot run and must not be chosen. On a
+  // case-insensitive filesystem (macOS) that name is the release folder itself, so skip it there.
+  const stray = path.join(root, "runtime", "data", "clawbrowser");
+  if (!fs.existsSync(stray)) {
+    fs.writeFileSync(stray, "#!/bin/sh\n");
+    fs.chmodSync(stray, 0o755);
+  }
   assert.equal(resolveBrowserRuntime({ platform: "linux", homeDir: root, env: {}, runtimeRoot: path.join(root, "runtime") }), executable);
 });
 

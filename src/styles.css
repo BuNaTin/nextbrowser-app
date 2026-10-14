@@ -6393,7 +6393,8 @@ code { background: var(--surface-4); padding: 1px 5px; border-radius: 4px; }
   color: var(--green);
   opacity: 1;
 }
-.onboarding-agent-error {
+.onboarding-agent-error,
+.onboarding-setup-error {
   display: flex;
   flex-wrap: wrap;
   align-items: center;

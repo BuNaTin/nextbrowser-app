@@ -48,6 +48,7 @@ export function OnboardingView() {
   const stepIndex = useStore((s) => s.onboardingStepIndex);
   const setStepIndex = useStore((s) => s.setOnboardingStepIndex);
   const suspendForSetup = useStore((s) => s.suspendOnboardingForSetup);
+  const setupError = useStore((s) => s.onboardingSetupError);
   const [tryChatConfirmOpen, setTryChatConfirmOpen] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
@@ -161,6 +162,10 @@ export function OnboardingView() {
       openProfileSetup();
       return;
     }
+    // The download prompt and start errors open under the tour, so step aside
+    // like the profile creator does. The sidebar brings the tour back once the
+    // start settles or the download is cancelled.
+    suspendForSetup();
     setSidebarCollapsed(false);
     window.requestAnimationFrame(() => window.dispatchEvent(
       new CustomEvent("nextbrowser:start-selected-profile"),
@@ -438,6 +443,11 @@ export function OnboardingView() {
                     </button>
                   )}
                 </div>
+                {setupError && (
+                  <div className="onboarding-setup-error error small" role="alert">
+                    <UserFacingError message={setupError} surface="onboarding" />
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -36,6 +36,7 @@ const { state } = vi.hoisted(() => {
     onboardingStepIndex: 1,
     setOnboardingStepIndex: () => undefined,
     suspendOnboardingForSetup: () => undefined,
+    onboardingSetupError: undefined as string | undefined,
   };
   return { state };
 });
@@ -58,6 +59,7 @@ describe("agent onboarding step", () => {
     state.activeWorkspaceId = "workspace";
     state.selectedProfile = undefined;
     state.statuses = {};
+    state.onboardingSetupError = undefined;
   });
 
   it("shows a compact connected state without setup copy or permanent links", () => {
@@ -158,5 +160,19 @@ describe("agent onboarding step", () => {
 
     expect(html).toContain("Start profile");
     expect(html).not.toContain("Set up profile");
+  });
+
+  it("says why the start failed when the tour comes back", () => {
+    state.onboardingStepIndex = 4;
+    state.profiles = [{ name: "work" }];
+    state.selectedProfile = "work";
+    state.statuses.work = "stopped";
+    state.onboardingSetupError = "We couldn't start “work”. Check your connection.";
+
+    const html = renderToStaticMarkup(<OnboardingView />);
+
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("We couldn&#x27;t start “work”. Check your connection.");
+    expect(html).toContain("Start profile");
   });
 });

@@ -144,7 +144,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
   const [profileCreationStage, setProfileCreationStage] = useState<string>();
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileActionError, setProfileActionError] = useState<string | null>(null);
-  const [pendingRuntimeInstall, setPendingRuntimeInstall] = useState<{ profile: string; runtime: Exclude<ProfileToolsetOption, "multilogin"> }>();
+  const [pendingRuntimeInstall, setPendingRuntimeInstall] = useState<{ profile: string; runtime: Exclude<ProfileToolsetOption, "multilogin">; onSettled?: (error?: string) => void }>();
   const [profileMoveError, setProfileMoveError] = useState<string | null>(null);
   const [profileConnectionEditor, setProfileConnectionEditor] = useState<{ name: string; connection: "managed" | "direct" | "personal"; country: string; proxyId: string } | null>(null);
   const [profileConnectionSaving, setProfileConnectionSaving] = useState(false);
@@ -209,33 +209,58 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
     s.selectProfile(undefined);
     setMultiloginSelection(s.activeWorkspaceId, { ...selection, active: true });
   };
-  const runProfileAction = (label: string, code: string, action: () => Promise<void>) => {
+  // Resolves with the message shown for a failure, or undefined on success.
+  const runProfileAction = (label: string, code: string, action: () => Promise<void>): Promise<string | undefined> => {
     setProfileActionError(null);
-    void action().catch((error: unknown) => {
+    return action().then(() => undefined, (error: unknown) => {
       if (isProxyTrafficExhaustedError(error)) {
         // nextctl refused the launch because the proxy traffic ran out. That
         // is not an internal error: a gated account has to ask in Discord.
-        setProfileActionError(proxyTrafficLaunchRefusedMessage(useStore.getState().proxy));
-        return;
+        const message = proxyTrafficLaunchRefusedMessage(useStore.getState().proxy);
+        setProfileActionError(message);
+        return message;
       }
       const detail = error instanceof Error ? error.message.trim() : String(error ?? "").trim();
       console.error(`[${code}] ${label}`, detail);
-      setProfileActionError(actionFailureMessage(label, code, detail));
+      const message = actionFailureMessage(label, code, detail);
+      setProfileActionError(message);
+      return message;
     });
   };
 
-  const startProfileWithConfirmation = async (profile: string, runtime: Exclude<ProfileToolsetOption, "multilogin">) => {
+  // onSettled runs once the start finishes or fails, or when the download
+  // prompt is cancelled, so a caller that waits on the start is never stuck.
+  const startProfileWithConfirmation = async (
+    profile: string,
+    runtime: Exclude<ProfileToolsetOption, "multilogin">,
+    onSettled?: (error?: string) => void,
+  ) => {
     setProfileActionError(null);
     try {
       const available = await invoke<boolean>("browser_runtime_available", { runtime });
       if (!available) {
-        setPendingRuntimeInstall({ profile, runtime });
+        setPendingRuntimeInstall({ profile, runtime, onSettled });
         return;
       }
-      runProfileAction(`We couldn't start “${profile}”.`, "PROFILE_START_FAILED", () => s.startProfile(profile));
+      void runProfileAction(`We couldn't start “${profile}”.`, "PROFILE_START_FAILED", () => s.startProfile(profile)).then(onSettled);
     } catch (error) {
-      setProfileActionError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileActionError(message);
+      onSettled?.(message);
     }
+  };
+
+  const cancelRuntimeInstall = () => {
+    const request = pendingRuntimeInstall;
+    setPendingRuntimeInstall(undefined);
+    request?.onSettled?.();
+  };
+
+  const confirmRuntimeInstall = () => {
+    const request = pendingRuntimeInstall;
+    if (!request) return;
+    setPendingRuntimeInstall(undefined);
+    void runProfileAction(`We couldn't start “${request.profile}”.`, "PROFILE_START_FAILED", () => s.startProfile(request.profile)).then(request.onSettled);
   };
 
   useEffect(() => {
@@ -295,7 +320,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
     const dismissRuntimeInstall = (event: KeyboardEvent) => {
       if (!shouldDismissModalWithEscape(event)) return;
       event.preventDefault();
-      setPendingRuntimeInstall(undefined);
+      cancelRuntimeInstall();
     };
     window.addEventListener("keydown", dismissRuntimeInstall);
     return () => window.removeEventListener("keydown", dismissRuntimeInstall);
@@ -821,12 +846,18 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
     const startSelectedProfile = () => {
       focusProfiles();
       s.setProfileSearch("");
+      // The tour steps aside while it starts a profile, so the download prompt
+      // and start errors are not hidden under it. Bring it back, with the
+      // error, once the start settles. A no-op when the tour is not waiting.
+      const resumeTour = (error?: string) => s.resumeOnboardingAfterSetup(error);
       const profile = guideProfileTarget(s.selectedProfile, guideProfileNames, showDefaultProfile);
       if (!profile) { openCreator(); return; }
       if (profile === "__default") {
         s.selectProfile(undefined);
         if (!defaultRunning && !defaultBusy) {
-          runProfileAction("We couldn't start the default profile.", "PROFILE_START_FAILED", s.startDefaultSession);
+          void runProfileAction("We couldn't start the default profile.", "PROFILE_START_FAILED", s.startDefaultSession).then(resumeTour);
+        } else {
+          resumeTour();
         }
         return;
       }
@@ -834,7 +865,9 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
       const status = s.statuses[profile] ?? s.profileSessions[profile]?.status ?? "unknown";
       if (status !== "running" && !["starting", "stopping", "rotating"].includes(status)) {
         const runtime = activeWorkspace?.profileToolsets[profile] ?? "clawbrowser";
-        void startProfileWithConfirmation(profile, runtime);
+        void startProfileWithConfirmation(profile, runtime, resumeTour);
+      } else {
+        resumeTour();
       }
     };
     window.addEventListener("nextbrowser:focus-profiles", focusProfiles);
@@ -2183,11 +2216,11 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
       ), document.body)}
 
       {pendingRuntimeInstall && createPortal((
-        <div className="modal-overlay" role="presentation" onMouseDown={() => setPendingRuntimeInstall(undefined)}>
+        <div className="modal-overlay" role="presentation" onMouseDown={cancelRuntimeInstall}>
           <section className="modal-card runtime-install-confirm" role="dialog" aria-modal="true" aria-labelledby="runtime-install-confirm-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="profile-menu-head"><Icon name="arrow.down.circle.fill" size={17} /><strong id="runtime-install-confirm-title">Download {pendingRuntimeInstall.runtime === "camoufox" ? "Camoufox" : pendingRuntimeInstall.runtime === "dasbrowser" ? "DasBrowser" : "Clawbrowser"}?</strong></div>
             <p className="muted small">This browser toolset is required to start “{pendingRuntimeInstall.profile}”. Nextbrowser will download it in the background and show progress. You can stop the download at any time.</p>
-            <div className="modal-actions"><button className="secondary" type="button" autoFocus onClick={() => setPendingRuntimeInstall(undefined)}>Cancel</button><button className="primary" type="button" onClick={() => { const request = pendingRuntimeInstall; setPendingRuntimeInstall(undefined); runProfileAction(`We couldn't start “${request.profile}”.`, "PROFILE_START_FAILED", () => s.startProfile(request.profile)); }}><Icon name="arrow.down.circle.fill" size={13} /> Download &amp; start</button></div>
+            <div className="modal-actions"><button className="secondary" type="button" autoFocus onClick={cancelRuntimeInstall}>Cancel</button><button className="primary" type="button" onClick={confirmRuntimeInstall}><Icon name="arrow.down.circle.fill" size={13} /> Download &amp; start</button></div>
           </section>
         </div>
       ), document.body)}

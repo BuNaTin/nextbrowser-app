@@ -622,6 +622,8 @@ interface State {
   showOnboarding: boolean;
   onboardingStepIndex: number;
   onboardingReturnPending: boolean;
+  /** Why the setup the tour stepped aside for failed, shown when it returns. */
+  onboardingSetupError?: string;
   sidebarWidth: number;
   sidebarCollapsed: boolean;
   chatListCollapsed: boolean;
@@ -768,7 +770,7 @@ interface State {
   completeConnectorPrompt: () => void;
   setOnboardingStepIndex: (index: number) => void;
   suspendOnboardingForSetup: () => void;
-  resumeOnboardingAfterSetup: () => void;
+  resumeOnboardingAfterSetup: (error?: string) => void;
   finishOnboarding: () => void;
   showOnboardingAgain: () => void;
   checkNextctlUpdate: (retryAttempt?: number) => Promise<boolean>;
@@ -4922,16 +4924,21 @@ export const useStore = create<State>((set, get) => {
       detail: { connector: prompt.id, resume: prompt.resume },
     }));
   },
-  setOnboardingStepIndex: (index) => set({ onboardingStepIndex: index }),
+  setOnboardingStepIndex: (index) => set({ onboardingStepIndex: index, onboardingSetupError: undefined }),
   suspendOnboardingForSetup: () => set({
     showOnboarding: false,
     onboardingReturnPending: true,
+    onboardingSetupError: undefined,
   }),
-  resumeOnboardingAfterSetup: () => {
+  resumeOnboardingAfterSetup: (error) => {
     if (!get().onboardingReturnPending) return;
+    // The sign-in prompt sits under the tour, and it resumes the tour itself
+    // when it closes. Coming back now would hide it again.
+    if (get().dashboardKeyPromptOpen) return;
     set({
       showOnboarding: true,
       onboardingReturnPending: false,
+      onboardingSetupError: error,
     });
   },
   finishOnboarding: () => {
@@ -4940,12 +4947,14 @@ export const useStore = create<State>((set, get) => {
       showOnboarding: false,
       onboardingStepIndex: 0,
       onboardingReturnPending: false,
+      onboardingSetupError: undefined,
     });
   },
   showOnboardingAgain: () => set({
     showOnboarding: true,
     onboardingStepIndex: 0,
     onboardingReturnPending: false,
+    onboardingSetupError: undefined,
   }),
 
   checkNextctlUpdate: async (retryAttempt = 0) => {

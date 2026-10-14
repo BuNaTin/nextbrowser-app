@@ -83,7 +83,7 @@ function multiloginCreationError(error: unknown, kind: MultiloginProfileKind): s
 interface SidebarProps {
   onOpenAgentSettings: () => void;
   onHome: () => void;
-  /** Rendered above the footer, e.g. the interface size control, so nothing floats over the footer. */
+  /** Rendered right of the agent status in the footer, e.g. the interface size control, so nothing floats over the footer. */
   footerAccessory?: ReactNode;
 }
 
@@ -1601,7 +1601,6 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
         )}
       </div>
       {logoutError && <div className="sidebar-account-error" role="alert">{logoutError}</div>}
-      {footerAccessory}
       <div className="nextctl-footer muted small">
         <Icon name="terminal" size={12} />
         <span>nextctl {s.nextctlVersion || "..."}</span>
@@ -1619,16 +1618,20 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
         {s.nextctlUpdateStatus && <span>· {s.nextctlUpdateStatus}</span>}
         {!s.nextctlSupportsSkill && !s.nextctlCompatibilityError && <span className="warn"> · no skill cmd</span>}
         <span className="spacer" />
-        <button
-          className={"agent-footer-status" + (ready ? " is-ready" : "")}
-          title="Agent settings"
-          aria-label="Open agent settings"
-          onClick={onOpenAgentSettings}
-        >
-          <span className="status-dot" />
-          <span>{agentName} · {ready ? "Connected" : s.agentLoggedIn() === false ? "Sign-in required" : "Not connected"}</span>
-          <Icon name="chevron.down" size={11} />
-        </button>
+        {/* The agent status and the accessory wrap together, so the accessory never lands on a line of its own. */}
+        <span className="agent-footer-group">
+          <button
+            className={"agent-footer-status" + (ready ? " is-ready" : "")}
+            title="Agent settings"
+            aria-label="Open agent settings"
+            onClick={onOpenAgentSettings}
+          >
+            <span className="status-dot" />
+            <span>{agentName} · {ready ? "Connected" : s.agentLoggedIn() === false ? "Sign-in required" : "Not connected"}</span>
+            <Icon name="chevron.down" size={11} />
+          </button>
+          {footerAccessory}
+        </span>
       </div>
 
       {createProfileOpen && createPortal((

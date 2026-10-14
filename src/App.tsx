@@ -137,7 +137,7 @@ function UIScaleSlider({ value, onChange }: { value: number; onChange: (next: nu
 function UIScaleControl({ value, onChange, onDismiss, inline = false }: { value: number; onChange: (next: number) => void; onDismiss: () => void; inline?: boolean }) {
   return (
     <div className={"ui-scale-control" + (inline ? " ui-scale-control-inline" : "")} title="Interface size">
-      <Icon name="magnifyingglass" size={13} />
+      <Icon name="magnifyingglass" size={inline ? 11 : 13} />
       <UIScaleSlider value={value} onChange={onChange} />
       <button
         className="plain-icon-btn plain-icon-btn-compact ui-scale-dismiss"

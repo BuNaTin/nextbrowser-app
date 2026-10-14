@@ -29,4 +29,21 @@ describe("workspace conflict recovery", () => {
     expect(merged.profileProxyIds).toEqual({ remote: "proxy-remote", shared: "proxy-new", local: "proxy-local" });
     expect(merged.name).toBe("Local");
   });
+
+  it("does not bring back a profile this device removed or moved elsewhere", () => {
+    const remote: Workspace = {
+      ...local,
+      profileNames: ["deleted", "moved", "remote-new", "shared"],
+      profileToolsets: { deleted: "clawbrowser", moved: "camoufox", "remote-new": "dasbrowser", shared: "clawbrowser" },
+      profileProxyIds: { deleted: "proxy-deleted" },
+    };
+    const merged = mergeWorkspaceAfterRevisionConflict(local, remote, {
+      removedLocally: new Set(["deleted"]),
+      assignedElsewhere: new Set(["moved"]),
+    });
+    expect(merged.profileNames).toEqual(["remote-new", "shared", "local"]);
+    expect(merged.profileToolsets).not.toHaveProperty("deleted");
+    expect(merged.profileToolsets).not.toHaveProperty("moved");
+    expect(merged.profileProxyIds).not.toHaveProperty("deleted");
+  });
 });

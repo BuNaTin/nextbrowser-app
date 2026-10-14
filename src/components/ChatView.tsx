@@ -32,10 +32,10 @@ import {
   type DistilledWorkflow,
 } from "../lib/workflowDistillation";
 import { chatPromptWithDeferredContext, chatToTerminalHandoff, terminalToChatHandoff } from "../lib/contextHandoff";
-import { browserProfileContext } from "../lib/browserProfileContext";
+import { agentVisibleProfileNames, browserProfileContext } from "../lib/browserProfileContext";
 import {
   MULTILOGIN_SELECTION_EVENT,
-  multiloginSelectionForWorkspace,
+  activeMultiloginSelectionForWorkspace,
   type MultiloginProfileSelection,
 } from "../lib/multiloginSelection";
 import { MultiloginChatProfilePicker } from "./MultiloginChatProfilePicker";
@@ -134,7 +134,7 @@ export function ChatView() {
   const [multiloginSelection, setMultiloginSelection] = useState<MultiloginProfileSelection>();
 
   useEffect(() => {
-    const refreshSelection = () => setMultiloginSelection(multiloginSelectionForWorkspace(conv?.workspaceId));
+    const refreshSelection = () => setMultiloginSelection(activeMultiloginSelectionForWorkspace(conv?.workspaceId));
     refreshSelection();
     window.addEventListener(MULTILOGIN_SELECTION_EVENT, refreshSelection);
     return () => window.removeEventListener(MULTILOGIN_SELECTION_EVENT, refreshSelection);
@@ -470,8 +470,9 @@ export function ChatView() {
                 multiloginSelection,
                 s.statuses,
                 s.profileIdentities,
+                s.profiles,
               )}
-              browserProfiles={(s.workspaces.find((workspace) => workspace.id === conv?.workspaceId)?.profileNames ?? []).map((name) => ({
+              browserProfiles={agentVisibleProfileNames(s.workspaces.find((workspace) => workspace.id === conv?.workspaceId)?.profileNames ?? [], s.profiles).map((name) => ({
                 name,
                 runtime: s.workspaces.find((workspace) => workspace.id === conv?.workspaceId)?.profileToolsets[name] ?? "clawbrowser",
                 running: s.statuses[name] === "running",

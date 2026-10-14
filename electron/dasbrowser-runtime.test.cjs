@@ -28,6 +28,19 @@ test("detects the managed macOS DasBrowser executable", (t) => {
   assert.equal(resolveDasbrowserRuntime({ platform: "darwin", homeDir: root, env: {}, runtimeRoot: path.join(root, "runtime") }), executable);
 });
 
+test("detects DasBrowser installed by the current Windows setup as chrome.exe", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "nextbrowser-dasbrowser-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const local = path.join(root, "AppData", "Local");
+  const executable = path.join(local, "Dasbrowser", "Application", "chrome.exe");
+  fs.mkdirSync(path.dirname(executable), { recursive: true });
+  fs.writeFileSync(executable, "binary");
+  assert.equal(
+    resolveDasbrowserRuntime({ platform: "win32", homeDir: root, env: { LOCALAPPDATA: local }, runtimeRoot: path.join(root, "runtime") }),
+    path.resolve(executable),
+  );
+});
+
 test("adapts the app toolset to nextctl's chromium CDP runtime", () => {
   const args = ["start", "--profile", "work", "--runtime", "dasbrowser", "--format", "json"];
   assert.equal(requestedBrowserRuntime(args), "dasbrowser");

@@ -49,6 +49,8 @@ it("creates a default workspace, project, and one profile per toolset without a 
   expect(state.conversations.some((conversation) => conversation.workspaceId === state.workspaces[0].id)).toBe(true);
   expect(state.workspaceSetupRequired).toBe(false);
   expect(state.workspaceSetupAuto).toBe("done");
+  // The first task runs in the selected profile, so one is selected for it.
+  expect(state.selectedProfile).toBe("Clawbrowser profile");
 });
 
 it("keeps the new workspace usable when optional default profiles cannot be created", async () => {
@@ -152,10 +154,48 @@ it("creates this computer's default profiles on request, once", async () => {
   expect(state.workspaces[0].profileNames).toEqual([...Object.keys(toolsets), "Clawbrowser profile 3", "DasBrowser profile 2", "Camoufox profile 2"]);
   expect(state.workspaces[0].profileToolsets).toMatchObject({ "Clawbrowser profile 3": "clawbrowser", "DasBrowser profile 2": "dasbrowser", "Camoufox profile 2": "camoufox" });
   expect(state).toMatchObject({ profilesLoaded: true, defaultProfilesCreating: false, defaultProfilesError: undefined });
+  expect(state.selectedProfile).toBe("Clawbrowser profile 3");
 
   await useStore.getState().createDefaultProfiles();
 
   expect(create).toHaveBeenCalledTimes(3);
+  create.mockRestore();
+});
+
+it("selects the first default that could be made when Clawbrowser fails", async () => {
+  const { useStore } = await import("./store");
+  const local: string[] = [];
+  computerWith(local);
+  useStore.setState(signedInOnNewComputer());
+  // Like the real one, creating a profile selects it.
+  const create = vi.spyOn(useStore.getState(), "createManagedProfile").mockImplementation(async (name, _country, options) => {
+    if (options?.runtime === "clawbrowser") throw new Error("Clawbrowser is not available");
+    local.push(name);
+    useStore.getState().selectProfile(name);
+    return name;
+  });
+
+  await useStore.getState().createDefaultProfiles();
+
+  expect(useStore.getState().selectedProfile).toBe("DasBrowser profile 2");
+  create.mockRestore();
+});
+
+it("keeps a profile the user already selected in the workspace", async () => {
+  const { useStore } = await import("./store");
+  const local = ["Camoufox profile"];
+  computerWith(local);
+  useStore.setState({ ...signedInOnNewComputer(), profiles: [{ name: "Camoufox profile" }], selectedProfile: "Camoufox profile" });
+  const create = vi.spyOn(useStore.getState(), "createManagedProfile").mockImplementation(async (name) => {
+    local.push(name);
+    useStore.getState().selectProfile(name);
+    return name;
+  });
+
+  await useStore.getState().createDefaultProfiles();
+
+  expect(create.mock.calls.map(([, , options]) => options?.runtime)).toEqual(["clawbrowser", "dasbrowser"]);
+  expect(useStore.getState().selectedProfile).toBe("Camoufox profile");
   create.mockRestore();
 });
 

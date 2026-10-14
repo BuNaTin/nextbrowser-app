@@ -958,8 +958,14 @@ const DEFAULT_WORKSPACE_TOOLSETS: { runtime: BrowserToolset; name: string }[] = 
 // list profiles that are not here. Those do not count, and their names stay
 // taken so this computer's profiles never replace them in the workspace.
 async function createDefaultWorkspaceProfiles(workspaceId: string): Promise<{ created: string[]; failure?: unknown }> {
-  const created: string[] = [];
+  const created: Array<{ name: string; runtime: BrowserToolset }> = [];
   let failure: unknown;
+  const initial = useStore.getState();
+  const chosen = initial.selectedProfile
+    && initial.workspaces.find((item) => item.id === workspaceId)?.profileNames.includes(initial.selectedProfile)
+    && initial.profiles.some((profile) => profile.name === initial.selectedProfile)
+    ? initial.selectedProfile
+    : undefined;
   for (const { runtime, name: defaultName } of DEFAULT_WORKSPACE_TOOLSETS) {
     const state = useStore.getState();
     const workspace = state.workspaces.find((item) => item.id === workspaceId);
@@ -974,7 +980,7 @@ async function createDefaultWorkspaceProfiles(workspaceId: string): Promise<{ cr
       for (let suffix = 2; taken.has(name); suffix += 1) name = `${defaultName} ${suffix}`;
       name = await state.createManagedProfile(name, "US", { runtime });
       await useStore.getState().assignProfileToProject(name, runtime, workspaceId);
-      created.push(name);
+      created.push({ name, runtime });
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("nextbrowser:profile-created", { detail: { name } }));
       }
@@ -983,7 +989,15 @@ async function createDefaultWorkspaceProfiles(workspaceId: string): Promise<{ cr
       failure = error;
     }
   }
-  return { created, failure };
+  // The first task runs "in the selected profile", and createManagedProfile
+  // selects each profile it makes, so the last default would stay selected.
+  // Keep the user's own choice, or else select the Clawbrowser default, or the
+  // first default that could be made.
+  const state = useStore.getState();
+  if (created.length && state.activeWorkspaceId === workspaceId) {
+    state.selectProfile(chosen ?? (created.find((profile) => profile.runtime === "clawbrowser") ?? created[0]).name);
+  }
+  return { created: created.map((profile) => profile.name), failure };
 }
 
 // Guard bootstrap against re-entry. React StrictMode invokes effects twice in

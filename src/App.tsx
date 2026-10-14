@@ -134,9 +134,9 @@ function UIScaleSlider({ value, onChange }: { value: number; onChange: (next: nu
   );
 }
 
-function UIScaleControl({ value, onChange, onDismiss }: { value: number; onChange: (next: number) => void; onDismiss: () => void }) {
+function UIScaleControl({ value, onChange, onDismiss, inline = false }: { value: number; onChange: (next: number) => void; onDismiss: () => void; inline?: boolean }) {
   return (
-    <div className="ui-scale-control" title="Interface size">
+    <div className={"ui-scale-control" + (inline ? " ui-scale-control-inline" : "")} title="Interface size">
       <Icon name="magnifyingglass" size={13} />
       <UIScaleSlider value={value} onChange={onChange} />
       <button
@@ -1627,7 +1627,13 @@ export function App() {
         className={"sidebar thin-material" + (sidebarCollapsed ? " sidebar-collapsed" : "")}
         style={{ width: sidebarCollapsed ? 68 : sidebarWidth }}
       >
-        <Sidebar onOpenAgentSettings={() => openSettings("agent")} onHome={() => setTab("chat")} />
+        <Sidebar
+          onOpenAgentSettings={() => openSettings("agent")}
+          onHome={() => setTab("chat")}
+          footerAccessory={!uiScaleFloatingHidden && !sidebarCollapsed
+            ? <UIScaleControl inline value={uiScale} onChange={setUiScale} onDismiss={dismissUiScaleFloating} />
+            : undefined}
+        />
       </aside>
       {!sidebarCollapsed && <div id="sidebar-resize" className="resize-handle" title="Resize sidebar" aria-label="Resize sidebar" />}
       <main className="content">
@@ -1753,7 +1759,8 @@ export function App() {
       )}
       {unexpectedError && <GlobalErrorNotice error={unexpectedError} onClose={() => setUnexpectedError(undefined)} />}
       {feedbackModal}
-      {!uiScaleFloatingHidden && (
+      {/* With the sidebar open the control sits in its footer; floating, it covered the agent status button. */}
+      {!uiScaleFloatingHidden && sidebarCollapsed && (
         <UIScaleControl value={uiScale} onChange={setUiScale} onDismiss={dismissUiScaleFloating} />
       )}
     </div>

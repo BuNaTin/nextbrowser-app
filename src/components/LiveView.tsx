@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { RemoteControlClient, type InputEnvelope, type RemoteLiveTab, type RemoteMediaStats, type RemoteStreamInfo } from "../remoteControl";
 import { useStore } from "../store";
 import { actionFailureMessage, internalError } from "../lib/userFacingError";
+import { nextLiveClick, type LiveClick } from "../lib/liveClickCount";
 import { invoke } from "../electronBridge";
 import {
   MULTILOGIN_SELECTION_EVENT,
@@ -53,6 +54,9 @@ function multiloginTargetKey(selection: MultiloginProfileSelection) {
   return `multilogin:${selection.kind}:${selection.id}`;
 }
 
+// Hover moves are sent at most this often while no button is pressed.
+const LIVE_HOVER_INTERVAL_MS = 50;
+
 export function LiveView({ active }: { active: boolean }) {
   const s = useStore();
   const [sessionKey, setSessionKey] = useState<string>("");
@@ -84,7 +88,9 @@ export function LiveView({ active }: { active: boolean }) {
   const streamGeneration = useRef(0);
   const inactiveTimerRef = useRef<number | null>(null);
   const inputWarningTimerRef = useRef<number | null>(null);
-  const pointerDragRef = useRef<{ pointerId: number; button: string; buttons: number; x: number; y: number } | null>(null);
+  const pointerDragRef = useRef<{ pointerId: number; button: string; buttons: number; x: number; y: number; clickCount: number } | null>(null);
+  const lastClickRef = useRef<LiveClick | undefined>(undefined);
+  const lastHoverSentRef = useRef(0);
   const runningProfiles = workspaceProfiles.filter((profile) => s.statuses[profile.name] === "running");
   const displayNameCounts = new Map<string, number>();
   for (const profile of workspaceProfiles) {
@@ -394,7 +400,7 @@ export function LiveView({ active }: { active: boolean }) {
     }
     sendLiveInput({
       type: "mouse",
-      payload: { event: "mouseReleased", x: point.x, y: point.y, button: drag.button, buttons: 0, clickCount: event.detail || 1, modifiers: modifierBits(event.nativeEvent) },
+      payload: { event: "mouseReleased", x: point.x, y: point.y, button: drag.button, buttons: 0, clickCount: drag.clickCount, modifiers: modifierBits(event.nativeEvent) },
     });
     pointerDragRef.current = null;
   };
@@ -405,18 +411,31 @@ export function LiveView({ active }: { active: boolean }) {
     const point = pointForEvent(event.nativeEvent);
     const button = buttonName(event.button);
     const buttons = event.buttons || 1;
+    const click = nextLiveClick(lastClickRef.current, { time: event.timeStamp, x: event.clientX, y: event.clientY, button });
+    lastClickRef.current = click;
     sendLiveInput({
       type: "mouse",
-      payload: { event: "mousePressed", x: point.x, y: point.y, button, buttons, clickCount: event.detail || 1, modifiers: modifierBits(event.nativeEvent) },
+      payload: { event: "mousePressed", x: point.x, y: point.y, button, buttons, clickCount: click.count, modifiers: modifierBits(event.nativeEvent) },
     });
-    pointerDragRef.current = { pointerId: event.pointerId, button, buttons, x: point.x, y: point.y };
+    pointerDragRef.current = { pointerId: event.pointerId, button, buttons, x: point.x, y: point.y, clickCount: click.count };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = pointerDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag) {
+      // Hover without a button held, throttled, so menus and hover states react.
+      if (event.pointerType !== "mouse" || event.timeStamp - lastHoverSentRef.current < LIVE_HOVER_INTERVAL_MS) return;
+      lastHoverSentRef.current = event.timeStamp;
+      const point = pointForEvent(event.nativeEvent);
+      sendLiveInput({
+        type: "mouse",
+        payload: { event: "mouseMoved", x: point.x, y: point.y, button: "none", buttons: 0, modifiers: modifierBits(event.nativeEvent) },
+      });
+      return;
+    }
+    if (drag.pointerId !== event.pointerId) return;
     const point = pointForEvent(event.nativeEvent);
     drag.x = point.x;
     drag.y = point.y;

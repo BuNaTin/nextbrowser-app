@@ -9089,12 +9089,37 @@ pre,
 .ui-scale-control:not(.ui-scale-control-settings) {
   transform: scale(0.82);
 }
-/* In the sidebar footer, above the nextctl and agent status row. */
+/* In the sidebar footer, right of the agent status: a compact pill that fits next to it at the minimum sidebar width. */
+/* A long agent name or status ("… · Sign-in required") moves the pill under it instead of past the sidebar edge. */
+.agent-footer-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  flex: none;
+  max-width: 100%;
+}
 .ui-scale-control.ui-scale-control-inline {
   position: static;
   transform: none;
-  align-self: flex-start;
-  margin: 0 12px 6px;
+  gap: 0;
+  height: 22px;
+  padding: 0 2px 0 6px;
+  background: transparent;
+  backdrop-filter: none;
+}
+.ui-scale-control-inline .plain-icon-btn-compact {
+  min-width: 18px !important;
+  min-height: 18px !important;
+  padding: 2px !important;
+  border-radius: 6px;
+}
+.ui-scale-control-inline .ui-scale-value {
+  min-width: 30px;
+  font-size: 10px;
+}
+.ui-scale-control-inline .ui-scale-dismiss {
+  margin-left: 0;
 }
 /* Same control, inline as a settings row instead of a floating pill. */
 .ui-scale-control-settings {

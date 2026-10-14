@@ -18,7 +18,7 @@ import { ProfileCreateRequestModal } from "./components/ProfileCreateRequestModa
 import { BrandLogo } from "./components/BrandLogo";
 import { Icon, Spinner } from "./components/Icon";
 import { AgentPicker } from "./components/AgentPicker";
-import { brandName, dashboardUrl, discordUrl, latestReleaseUrl, repoUrl } from "./constants";
+import { brandName, discordUrl, latestReleaseUrl, repoUrl } from "./constants";
 import { trafficAllowanceBytes, trafficAllowanceFraction } from "./lib/trafficGate";
 import { getPreviewMode, getPreviewNodeMavenState, getPreviewTab } from "./preview";
 import { humanBytes, type AppTab, type Conversation } from "./types";
@@ -1426,7 +1426,7 @@ export function App() {
           remaining_bytes: nodeMavenState === "exhausted" ? 0 : 760_000_000,
           percent_used: nodeMavenState === "exhausted" ? 100 : 24,
           state: nodeMavenState === "exhausted" ? "exhausted" : "ok",
-          dashboard_url: dashboardUrl,
+          dashboard_url: "https://dashboard.nodemaven.com/dashboard",
           provider: "nodemaven",
           provider_account_email: "customer@example.com",
           provider_access_method: "password_reset",

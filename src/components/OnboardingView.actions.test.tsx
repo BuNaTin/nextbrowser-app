@@ -30,10 +30,11 @@ const { state } = vi.hoisted(() => ({
     runtime: { claude: { authorizing: false } },
     authed: true,
     profiles: [] as Array<{ name: string }>,
-    workspaces: [] as Array<{ id: string; profileNames: string[] }>,
+    workspaces: [] as Array<{ id: string; profileNames: string[]; profileToolsets?: Record<string, string> }>,
     activeWorkspaceId: "workspace",
     statuses: {} as Record<string, string>,
     selectedProfile: undefined as string | undefined,
+    selectProfile: vi.fn(),
     setDashboardKeyPromptOpen: vi.fn(),
     onboardingStepIndex: 4,
     setOnboardingStepIndex: vi.fn(),
@@ -54,18 +55,32 @@ function text(node: ReactNode): string {
   return isValidElement<{ children?: ReactNode }>(node) ? text(node.props.children) : "";
 }
 
-function button(node: ReactNode, label: string): { onClick: () => void; disabled?: boolean } | undefined {
+type ButtonProps = { children?: ReactNode; onClick: () => void; disabled?: boolean };
+
+function button(node: ReactNode, matches: (caption: string) => boolean): ButtonProps | undefined {
   for (const child of Children.toArray(node)) {
-    if (!isValidElement<{ children?: ReactNode; onClick: () => void; disabled?: boolean }>(child)) continue;
-    if (child.type === "button" && text(child.props.children).trim() === label) return child.props;
-    const match = button(child.props.children, label);
+    if (!isValidElement<ButtonProps>(child)) continue;
+    if (child.type === "button" && matches(text(child.props.children).trim())) return child.props;
+    const match = button(child.props.children, matches);
     if (match) return match;
   }
 }
 
+function find(label: string) {
+  return button(OnboardingView(), (caption) => caption === label);
+}
+
 function press(label: string) {
-  const target = button(OnboardingView(), label);
+  const target = find(label);
   expect(target, `button "${label}"`).toBeDefined();
+  expect(target!.disabled, `button "${label}" is enabled`).toBeFalsy();
+  target!.onClick();
+}
+
+// A profile row reads as its name followed by its toolset and status.
+function pressProfile(label: string) {
+  const target = button(OnboardingView(), (caption) => caption.startsWith(label) && caption.includes(" · "));
+  expect(target, `profile "${label}"`).toBeDefined();
   target!.onClick();
 }
 
@@ -107,6 +122,51 @@ describe("Live step profile start", () => {
     state.selectedProfile = undefined;
 
     press("Set up profile");
+
+    expect(state.suspendOnboardingForSetup).toHaveBeenCalledOnce();
+    expect(dispatched).toHaveBeenCalledExactlyOnceWith("nextbrowser:open-profile-creator");
+  });
+});
+
+describe("profile step", () => {
+  const names = ["Clawbrowser profile", "DasBrowser profile", "Camoufox profile"];
+
+  beforeEach(() => {
+    state.onboardingStepIndex = 2;
+    state.profiles = names.map((name) => ({ name }));
+    state.workspaces = [{
+      id: "workspace",
+      profileNames: names,
+      profileToolsets: { "Clawbrowser profile": "clawbrowser", "DasBrowser profile": "dasbrowser", "Camoufox profile": "camoufox" },
+    }];
+    state.selectedProfile = undefined;
+    state.statuses = {};
+  });
+
+  it("selects the profile the user picks without starting it", () => {
+    expect(find("Start profile")?.disabled).toBe(true);
+
+    pressProfile("DasBrowser profile");
+
+    expect(state.selectProfile).toHaveBeenCalledExactlyOnceWith("DasBrowser profile");
+    expect(state.suspendOnboardingForSetup).not.toHaveBeenCalled();
+    expect(dispatched).not.toHaveBeenCalled();
+  });
+
+  it("starts the chosen profile from the step", () => {
+    state.selectedProfile = "DasBrowser profile";
+
+    press("Start profile");
+
+    expect(state.suspendOnboardingForSetup).toHaveBeenCalledOnce();
+    expect(state.setSidebarCollapsed).toHaveBeenCalledWith(false);
+    expect(dispatched).toHaveBeenCalledExactlyOnceWith("nextbrowser:start-selected-profile");
+  });
+
+  it("keeps creating a profile as the secondary action", () => {
+    state.selectedProfile = "DasBrowser profile";
+
+    press("Create a profile");
 
     expect(state.suspendOnboardingForSetup).toHaveBeenCalledOnce();
     expect(dispatched).toHaveBeenCalledExactlyOnceWith("nextbrowser:open-profile-creator");

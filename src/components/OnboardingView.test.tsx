@@ -103,6 +103,54 @@ describe("agent onboarding step", () => {
     expect(html).not.toContain("Verify identity when country");
   });
 
+  it("lets the user choose one of the workspace profiles before starting it", () => {
+    state.onboardingStepIndex = 2;
+    state.profiles = [{ name: "shop" }, { name: "work" }];
+    state.workspaces = [{ id: "workspace", profileNames: ["shop", "work"] }];
+
+    const html = renderToStaticMarkup(<OnboardingView />);
+
+    expect(html).toContain("Choose the profile the agent should use, then start it.");
+    expect(html).toContain("Choose a profile");
+    expect(html).toContain("2 saved · 0 running");
+    expect(html.match(/class="onboarding-profile-option"/g)).toHaveLength(2);
+    expect(html).toContain("Clawbrowser · Stopped");
+    expect(html).toMatch(/<button type="button" class="btn-bordered-prominent" disabled="">Start profile/);
+    expect(html).toContain("Create a profile");
+    expect(html).not.toContain("Set up profile");
+  });
+
+  it("marks the selected profile and offers to start it", () => {
+    state.onboardingStepIndex = 2;
+    state.profiles = [{ name: "shop" }, { name: "work" }];
+    state.workspaces = [{ id: "workspace", profileNames: ["shop", "work"] }];
+    state.selectedProfile = "work";
+    state.statuses.shop = "running";
+
+    const html = renderToStaticMarkup(<OnboardingView />);
+
+    expect(html).toContain("Start a profile");
+    expect(html).toContain("2 saved · 1 running");
+    expect(html.match(/aria-pressed="true"/g)).toHaveLength(1);
+    expect(html).toMatch(/is-selected" aria-pressed="true">.*<strong>work<\/strong>/);
+    expect(html).toMatch(/<button type="button" class="btn-bordered-prominent">Start profile/);
+  });
+
+  it("calls the selected profile ready once it runs", () => {
+    state.onboardingStepIndex = 2;
+    state.profiles = [{ name: "shop" }, { name: "work" }];
+    state.workspaces = [{ id: "workspace", profileNames: ["shop", "work"] }];
+    state.selectedProfile = "work";
+    state.statuses.work = "running";
+
+    const html = renderToStaticMarkup(<OnboardingView />);
+
+    expect(html).toContain("Profile ready");
+    expect(html).toContain("Clawbrowser · Running");
+    expect(html).not.toContain("Start profile");
+    expect(html).toContain("Create a profile");
+  });
+
   it("keeps the first task compact and offers a cancellable Chat handoff", () => {
     state.onboardingStepIndex = 3;
 

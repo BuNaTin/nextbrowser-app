@@ -4,6 +4,7 @@ import { trackEvent } from "../lib/analytics";
 import {
   FIRST_TASK_EXAMPLE,
   ONBOARDING_STEPS,
+  onboardingProfileChoices,
   onboardingProfileSummary,
 } from "../lib/onboarding";
 import { openGuideChatDraft } from "../lib/guideDraft";
@@ -36,7 +37,14 @@ export function OnboardingView() {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const statuses = useStore((s) => s.statuses);
   const selectedProfile = useStore((s) => s.selectedProfile);
+  const selectProfile = useStore((s) => s.selectProfile);
   const workspaceProfileNames = guideWorkspaceProfileNames(activeWorkspaceId, workspaces, profiles);
+  const profileChoices = onboardingProfileChoices(
+    workspaceProfileNames,
+    profiles,
+    workspaces.find((workspace) => workspace.id === activeWorkspaceId)?.profileToolsets ?? {},
+    statuses,
+  );
   const profileCount = workspaceProfileNames.length;
   const runningProfileCount = workspaceProfileNames.filter((name) => statuses[name] === "running").length;
   const selectedWorkspaceProfile = selectedProfile && workspaceProfileNames.includes(selectedProfile)
@@ -154,14 +162,7 @@ export function OnboardingView() {
     window.dispatchEvent(new CustomEvent("nextbrowser:open-profile-creator"));
   };
 
-  const startProfileForLive = () => {
-    trackEvent("onboarding_live_profile_action", {
-      action: profileCount > 0 ? "start" : "setup",
-    });
-    if (profileCount === 0) {
-      openProfileSetup();
-      return;
-    }
+  const startSelectedProfile = () => {
     // The download prompt and start errors open under the tour, so step aside
     // like the profile creator does. The sidebar brings the tour back once the
     // start settles or the download is cancelled.
@@ -170,6 +171,27 @@ export function OnboardingView() {
     window.requestAnimationFrame(() => window.dispatchEvent(
       new CustomEvent("nextbrowser:start-selected-profile"),
     ));
+  };
+
+  const chooseProfile = (name: string) => {
+    trackEvent("onboarding_profile_action", { action: "select" });
+    selectProfile(name);
+  };
+
+  const startChosenProfile = () => {
+    trackEvent("onboarding_profile_action", { action: "start" });
+    startSelectedProfile();
+  };
+
+  const startProfileForLive = () => {
+    trackEvent("onboarding_live_profile_action", {
+      action: profileCount > 0 ? "start" : "setup",
+    });
+    if (profileCount === 0) {
+      openProfileSetup();
+      return;
+    }
+    startSelectedProfile();
   };
 
   const openTryChatConfirmation = () => {
@@ -341,26 +363,75 @@ export function OnboardingView() {
 
             {current.id === "profile" && (
               <div className="onboarding-step-content">
-                <div className={"onboarding-profile-status" + (runningProfileCount > 0 ? " is-ready" : "")}>
+                <div className={"onboarding-profile-status" + (selectedSessionRunning ? " is-ready" : "")}>
                   <Icon
-                    name={runningProfileCount > 0 ? "checkmark.circle.fill" : "person.2.fill"}
+                    name={selectedSessionRunning ? "checkmark.circle.fill" : "person.2.fill"}
                     size={18}
                   />
                   <span>
                     <strong>
-                      {runningProfileCount > 0
+                      {selectedSessionRunning
                         ? "Profile ready"
-                        : profileCount > 0
-                          ? "Start a profile"
-                          : "Create a profile"}
+                        : profileCount === 0
+                          ? "Create a profile"
+                          : selectedWorkspaceProfile
+                            ? "Start a profile"
+                            : "Choose a profile"}
                     </strong>
                     <span>{onboardingProfileSummary(profileCount, runningProfileCount)}</span>
                   </span>
-                  <button type="button" className="btn-bordered" onClick={openProfileSetup}>
-                    Set up profile
-                    <Icon name="chevron.right" size={13} />
-                  </button>
+                  {profileCount === 0 ? (
+                    <button type="button" className="btn-bordered" onClick={openProfileSetup}>
+                      Set up profile
+                      <Icon name="chevron.right" size={13} />
+                    </button>
+                  ) : !selectedSessionRunning && (
+                    <button
+                      type="button"
+                      className="btn-bordered-prominent"
+                      disabled={!selectedWorkspaceProfile || selectedSessionStarting}
+                      onClick={startChosenProfile}
+                    >
+                      {selectedSessionStarting && <Spinner size={13} />}
+                      {selectedSessionStarting ? "Starting…" : "Start profile"}
+                      {!selectedSessionStarting && <Icon name="chevron.right" size={13} />}
+                    </button>
+                  )}
                 </div>
+                {profileCount > 0 && (
+                  <div className="onboarding-profile-options" role="group" aria-label="Workspace profiles">
+                    {profileChoices.map((choice) => {
+                      const chosen = choice.name === selectedWorkspaceProfile;
+                      return (
+                        <button
+                          key={choice.name}
+                          type="button"
+                          className={"onboarding-profile-option" + (chosen ? " is-selected" : "")}
+                          aria-pressed={chosen}
+                          onClick={() => chooseProfile(choice.name)}
+                        >
+                          <span className={"dot " + (choice.state === "running" ? "green" : choice.state === "starting" ? "orange" : "gray")} />
+                          <span>
+                            <strong>{choice.label}</strong>
+                            <span>{choice.detail}</span>
+                          </span>
+                          {chosen && <Icon name="checkmark.circle.fill" size={16} className="ok" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {setupError && (
+                  <div className="onboarding-setup-error error small" role="alert">
+                    <UserFacingError message={setupError} surface="onboarding" />
+                  </div>
+                )}
+                {profileCount > 0 && (
+                  <button type="button" className="btn-bordered onboarding-profile-create" onClick={openProfileSetup}>
+                    <Icon name="plus" size={13} />
+                    Create a profile
+                  </button>
+                )}
                 <p className="muted small">Saved profiles are browser settings. A browser toolset downloads separately when you first start it.</p>
               </div>
             )}

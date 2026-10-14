@@ -40,6 +40,10 @@ const { state } = vi.hoisted(() => ({
     setOnboardingStepIndex: vi.fn(),
     suspendOnboardingForSetup: vi.fn(),
     onboardingSetupError: undefined as string | undefined,
+    profilesLoaded: true,
+    workspaceSetupAuto: "done",
+    defaultProfilesCreating: false,
+    createDefaultProfiles: vi.fn(),
   },
 }));
 
@@ -166,6 +170,33 @@ describe("profile step", () => {
   it("keeps creating a profile as the secondary action", () => {
     state.selectedProfile = "DasBrowser profile";
 
+    press("Create a profile");
+
+    expect(state.suspendOnboardingForSetup).toHaveBeenCalledOnce();
+    expect(dispatched).toHaveBeenCalledExactlyOnceWith("nextbrowser:open-profile-creator");
+  });
+});
+
+describe("profile step on a computer without the workspace's profiles", () => {
+  beforeEach(() => {
+    state.onboardingStepIndex = 2;
+    // The workspace synced from another computer, where its profile lives.
+    state.profiles = [];
+    state.workspaces = [{ id: "workspace", profileNames: ["work"] }];
+    state.selectedProfile = undefined;
+    state.statuses = {};
+  });
+
+  it("creates the default profiles here only when asked", () => {
+    expect(state.createDefaultProfiles).not.toHaveBeenCalled();
+
+    press("Create default profiles");
+
+    expect(state.createDefaultProfiles).toHaveBeenCalledOnce();
+    expect(state.suspendOnboardingForSetup).not.toHaveBeenCalled();
+  });
+
+  it("still offers to create a profile by hand", () => {
     press("Create a profile");
 
     expect(state.suspendOnboardingForSetup).toHaveBeenCalledOnce();

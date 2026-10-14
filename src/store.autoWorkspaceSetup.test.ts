@@ -95,3 +95,99 @@ it("creates fresh defaults instead of adopting another account's same-named prof
   expect(useStore.getState().workspaces[0].profileNames.sort()).toEqual(created.sort());
   create.mockRestore();
 });
+
+const toolsets = { "Clawbrowser profile": "clawbrowser", "DasBrowser profile": "dasbrowser", "Camoufox profile": "camoufox" } as const;
+
+// A workspace made on another computer: its profiles live there, not here.
+function syncedWorkspace() {
+  return {
+    id: "synced",
+    name: "My workspace",
+    profileNames: Object.keys(toolsets),
+    profileToolsets: { ...toolsets },
+    profileProxyIds: {},
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function computerWith(local: string[]) {
+  bridge.invoke.mockImplementation(async (command: string) => {
+    if (command === "nextctl_run") return { code: 0, stdout: JSON.stringify({ ok: true, data: { profiles: local.map((name) => ({ name })) } }), stderr: "" };
+    if (command === "workspaces_list") return { workspaces: [] };
+    if (command === "projects_list") return { projects: [] };
+    return { revision: 1 };
+  });
+}
+
+function signedInOnNewComputer() {
+  return { ...freshAccount(), workspaceSetupRequired: false, workspaceSetupAuto: "done" as const, workspaces: [syncedWorkspace()], activeWorkspaceId: "synced" };
+}
+
+it("never creates profiles for a workspace synced from another computer by itself", async () => {
+  const { useStore } = await import("./store");
+  useStore.setState(signedInOnNewComputer());
+  await useStore.getState().ensureDefaultWorkspaceSetup();
+  expect(bridge.invoke).not.toHaveBeenCalled();
+  expect(useStore.getState().workspaces[0].profileNames).toEqual(Object.keys(toolsets));
+});
+
+it("creates this computer's default profiles on request, once", async () => {
+  const { useStore } = await import("./store");
+  // Another account's profile on this machine keeps its name too.
+  const local = ["Clawbrowser profile 2"];
+  computerWith(local);
+  useStore.setState(signedInOnNewComputer());
+  const create = vi.spyOn(useStore.getState(), "createManagedProfile").mockImplementation(async (name) => { local.push(name); return name; });
+
+  await useStore.getState().createDefaultProfiles();
+
+  // The workspace keeps the other computer's profiles under their names.
+  expect(create.mock.calls.map(([name, , options]) => [name, options?.runtime])).toEqual([
+    ["Clawbrowser profile 3", "clawbrowser"],
+    ["DasBrowser profile 2", "dasbrowser"],
+    ["Camoufox profile 2", "camoufox"],
+  ]);
+  const state = useStore.getState();
+  expect(state.workspaces[0].profileNames).toEqual([...Object.keys(toolsets), "Clawbrowser profile 3", "DasBrowser profile 2", "Camoufox profile 2"]);
+  expect(state.workspaces[0].profileToolsets).toMatchObject({ "Clawbrowser profile 3": "clawbrowser", "DasBrowser profile 2": "dasbrowser", "Camoufox profile 2": "camoufox" });
+  expect(state).toMatchObject({ profilesLoaded: true, defaultProfilesCreating: false, defaultProfilesError: undefined });
+
+  await useStore.getState().createDefaultProfiles();
+
+  expect(create).toHaveBeenCalledTimes(3);
+  create.mockRestore();
+});
+
+it("creates the profiles it can and skips a toolset that fails", async () => {
+  const { useStore } = await import("./store");
+  const local: string[] = [];
+  computerWith(local);
+  useStore.setState(signedInOnNewComputer());
+  const create = vi.spyOn(useStore.getState(), "createManagedProfile").mockImplementation(async (name, _country, options) => {
+    if (options?.runtime === "dasbrowser") throw new Error("DasBrowser is not available");
+    local.push(name);
+    return name;
+  });
+
+  await useStore.getState().createDefaultProfiles();
+
+  expect(useStore.getState().workspaces[0].profileNames.slice(3)).toEqual(["Clawbrowser profile 2", "Camoufox profile 2"]);
+  expect(useStore.getState().defaultProfilesError).toBeUndefined();
+  create.mockRestore();
+});
+
+it("says why when no profile could be created", async () => {
+  const { useStore } = await import("./store");
+  computerWith([]);
+  useStore.setState(signedInOnNewComputer());
+  const create = vi.spyOn(useStore.getState(), "createManagedProfile").mockRejectedValue(new Error("cli down"));
+
+  await useStore.getState().createDefaultProfiles();
+
+  expect(create).toHaveBeenCalledTimes(3);
+  expect(useStore.getState().workspaces[0].profileNames).toEqual(Object.keys(toolsets));
+  expect(useStore.getState().defaultProfilesCreating).toBe(false);
+  expect(useStore.getState().defaultProfilesError).toMatch(/^We couldn't create the profiles\. .*Ref: NB-/);
+  create.mockRestore();
+});

@@ -94,7 +94,7 @@ import { trafficGateState } from "./lib/trafficGate";
 import { activeAutomationRecording, clearActiveAutomationRecording } from "./lib/automationRecording";
 import { clearActiveAutomationExecution } from "./lib/automationExecution";
 import { setAnalyticsUserId, trackEvent, trackScreenView, trackTiming } from "./lib/analytics";
-import { errorReference, internalError } from "./lib/userFacingError";
+import { actionFailureMessage, errorReference, internalError } from "./lib/userFacingError";
 import { agentEmptyReplyMessage } from "./lib/agentRunResult";
 import { isBrowserVerificationFailure, userFacingBrowserError } from "./lib/userFacingBrowserError";
 import {
@@ -584,6 +584,11 @@ interface State {
   githubStar?: GitHubStarStatus | null;
   githubStarPromptOpen: boolean;
   profiles: Profile[];
+  /** True once this computer's profile list has been read. */
+  profilesLoaded: boolean;
+  /** The default profiles are being created on this computer. */
+  defaultProfilesCreating: boolean;
+  defaultProfilesError?: string;
   pendingProfileCreateRequests: ProfileCreateRequest[];
   personalProxies: PersonalProxy[];
   proxyCountries: RotationCountry[];
@@ -782,6 +787,9 @@ interface State {
   /** Create a default workspace, project, and one profile per toolset without
    *  showing the setup modal. Falls back to the gate only if it fails. */
   ensureDefaultWorkspaceSetup: () => Promise<void>;
+  /** Create the default profiles in the active workspace on this computer, on
+   *  the user's request. Profiles do not sync between computers. */
+  createDefaultProfiles: () => Promise<void>;
 
   conversationsForAgent: (agentId: string) => Conversation[];
   activeConversation: () => Conversation | undefined;
@@ -943,6 +951,41 @@ const DEFAULT_WORKSPACE_TOOLSETS: { runtime: BrowserToolset; name: string }[] = 
   { runtime: "dasbrowser", name: "DasBrowser profile" },
   { runtime: "camoufox", name: "Camoufox profile" },
 ];
+
+// Creates a default profile for each toolset that has no profile in the
+// workspace on this computer, best effort per toolset. Profiles stay on the
+// computer that created them, so a workspace synced from another computer can
+// list profiles that are not here. Those do not count, and their names stay
+// taken so this computer's profiles never replace them in the workspace.
+async function createDefaultWorkspaceProfiles(workspaceId: string): Promise<{ created: string[]; failure?: unknown }> {
+  const created: string[] = [];
+  let failure: unknown;
+  for (const { runtime, name: defaultName } of DEFAULT_WORKSPACE_TOOLSETS) {
+    const state = useStore.getState();
+    const workspace = state.workspaces.find((item) => item.id === workspaceId);
+    const local = new Set(state.profiles.map((profile) => profile.name));
+    const alreadyHere = workspace?.profileNames.some((name) =>
+      local.has(name) && (workspace.profileToolsets[name] ?? "clawbrowser") === runtime);
+    if (alreadyHere) continue;
+    try {
+      // Machine-wide inventory can belong to another account. Never adopt it.
+      const taken = new Set([...local, ...state.workspaces.flatMap((item) => item.profileNames)]);
+      let name = defaultName;
+      for (let suffix = 2; taken.has(name); suffix += 1) name = `${defaultName} ${suffix}`;
+      name = await state.createManagedProfile(name, "US", { runtime });
+      await useStore.getState().assignProfileToProject(name, runtime, workspaceId);
+      created.push(name);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("nextbrowser:profile-created", { detail: { name } }));
+      }
+    } catch (error) {
+      console.warn("[AUTO_SETUP_PROFILE_FAILED]", runtime, error);
+      failure = error;
+    }
+  }
+  return { created, failure };
+}
+
 // Guard bootstrap against re-entry. React StrictMode invokes effects twice in
 // dev, and without this each agent:* listener would be registered again, so a
 // single agent reply would be appended once per registration (duplicate output).
@@ -2202,6 +2245,8 @@ export const useStore = create<State>((set, get) => {
   startupError: undefined,
   isLoggingIn: false,
   profiles: [],
+  profilesLoaded: false,
+  defaultProfilesCreating: false,
   pendingProfileCreateRequests: [],
   personalProxies: [],
   proxyCountries: [],
@@ -3517,6 +3562,8 @@ export const useStore = create<State>((set, get) => {
         githubStarPromptOpen: false,
         accountPairing: undefined,
         profiles: [],
+        profilesLoaded: false,
+        defaultProfilesError: undefined,
         pendingProfileCreateRequests: [],
         statuses: {},
         profileSessions: {},
@@ -3694,7 +3741,7 @@ export const useStore = create<State>((set, get) => {
         list = retry;
       }
       // Render the inventory without waiting for every browser status command.
-      set({ profiles: list.profiles });
+      set({ profiles: list.profiles, profilesLoaded: true });
       profileInventoryEpoch = epoch;
       pruneLocallyDeletedProfiles(list.profiles.map((profile) => profile.name));
       const statuses: Record<string, string> = {};
@@ -5418,7 +5465,7 @@ export const useStore = create<State>((set, get) => {
       .filter(([, conversationId]) => get().conversations.some((c) => c.id === conversationId && c.workspaceId === id)));
     if (selected) activeConvId[agentId] = selected.id;
     else delete activeConvId[agentId];
-    set({ activeWorkspaceId: id, activeConvId,
+    set({ activeWorkspaceId: id, activeConvId, defaultProfilesError: undefined,
       selectedProfile: rememberedSelectedProfile(get().workspaces.find((workspace) => workspace.id === id)),
       workspaceSetupRequired: requiresWorkspaceSetup(get().workspaces, get().conversations, id, get().accountOwnerId),
       terminalChat: selected?.chatMode === "terminal",
@@ -5562,23 +5609,7 @@ export const useStore = create<State>((set, get) => {
           window.dispatchEvent(new CustomEvent("nextbrowser:project-created", { detail: { id: projectId } }));
         }
       }
-      for (const { runtime, name: defaultName } of DEFAULT_WORKSPACE_TOOLSETS) {
-        const current = get().workspaces.find((item) => item.id === workspaceId);
-        const alreadyAssigned = Object.values(current?.profileToolsets ?? {}).includes(runtime);
-        if (alreadyAssigned) continue;
-        try {
-          // Machine-wide inventory can belong to another account. Never adopt it.
-          let name = defaultName;
-          for (let suffix = 2; get().profiles.some((profile) => profile.name === name); suffix += 1) name = `${defaultName} ${suffix}`;
-          name = await get().createManagedProfile(name, "US", { runtime });
-          await get().assignProfileToProject(name, runtime, workspaceId);
-          if (typeof window !== "undefined") {
-            window.dispatchEvent(new CustomEvent("nextbrowser:profile-created", { detail: { name } }));
-          }
-        } catch (error) {
-          console.warn("[AUTO_SETUP_PROFILE_FAILED]", runtime, error);
-        }
-      }
+      await createDefaultWorkspaceProfiles(workspaceId);
       await get().loadProfiles();
       const state = get();
       const stillRequired = requiresWorkspaceSetup(state.workspaces, state.conversations, state.activeWorkspaceId, state.accountOwnerId);
@@ -5588,6 +5619,28 @@ export const useStore = create<State>((set, get) => {
       set({ workspaceSetupAuto: "failed" });
     } finally {
       defaultSetupInFlight = false;
+    }
+  },
+
+  createDefaultProfiles: async () => {
+    const workspaceId = get().activeWorkspaceId;
+    if (!get().authed || !workspaceId || defaultSetupInFlight) return;
+    defaultSetupInFlight = true;
+    set({ defaultProfilesCreating: true, defaultProfilesError: undefined });
+    trackEvent("default_profiles_requested");
+    try {
+      // Read this computer's profiles first, so a toolset that already has a
+      // profile here is skipped and no taken name is reused.
+      await get().loadProfiles();
+      const { created, failure } = await createDefaultWorkspaceProfiles(workspaceId);
+      await get().loadProfiles();
+      trackEvent("default_profiles_created", { count: created.length });
+      if (!created.length && failure) {
+        set({ defaultProfilesError: actionFailureMessage("We couldn't create the profiles.", "DEFAULT_PROFILES_FAILED", failure) });
+      }
+    } finally {
+      defaultSetupInFlight = false;
+      set({ defaultProfilesCreating: false });
     }
   },
 

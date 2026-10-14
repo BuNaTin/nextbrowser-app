@@ -9,6 +9,7 @@ import {
 } from "../lib/onboarding";
 import { openGuideChatDraft } from "../lib/guideDraft";
 import { guideWorkspaceProfileNames } from "../lib/guideQuickStart";
+import { workspaceHasNoLocalProfiles } from "../lib/workspaceProfiles";
 import { useStore } from "../store";
 import type { AppTab } from "../types";
 import { AgentInstallLink } from "./AgentInstallLink";
@@ -46,6 +47,10 @@ export function OnboardingView() {
     statuses,
   );
   const profileCount = workspaceProfileNames.length;
+  const noLocalProfiles = useStore(workspaceHasNoLocalProfiles);
+  const creatingDefaultProfiles = useStore((s) => s.defaultProfilesCreating);
+  const defaultProfilesError = useStore((s) => s.defaultProfilesError);
+  const createDefaultProfiles = useStore((s) => s.createDefaultProfiles);
   const runningProfileCount = workspaceProfileNames.filter((name) => statuses[name] === "running").length;
   const selectedWorkspaceProfile = selectedProfile && workspaceProfileNames.includes(selectedProfile)
     ? selectedProfile
@@ -171,6 +176,11 @@ export function OnboardingView() {
     window.requestAnimationFrame(() => window.dispatchEvent(
       new CustomEvent("nextbrowser:start-selected-profile"),
     ));
+  };
+
+  const createDefaultProfilesHere = () => {
+    trackEvent("onboarding_profile_action", { action: "create_defaults" });
+    void createDefaultProfiles();
   };
 
   const chooseProfile = (name: string) => {
@@ -372,15 +382,31 @@ export function OnboardingView() {
                     <strong>
                       {selectedSessionRunning
                         ? "Profile ready"
-                        : profileCount === 0
-                          ? "Create a profile"
-                          : selectedWorkspaceProfile
-                            ? "Start a profile"
-                            : "Choose a profile"}
+                        : noLocalProfiles
+                          ? "No profiles on this computer"
+                          : profileCount === 0
+                            ? "Create a profile"
+                            : selectedWorkspaceProfile
+                              ? "Start a profile"
+                              : "Choose a profile"}
                     </strong>
-                    <span>{onboardingProfileSummary(profileCount, runningProfileCount)}</span>
+                    <span>
+                      {noLocalProfiles
+                        ? "Profiles stay on the computer where they were created."
+                        : onboardingProfileSummary(profileCount, runningProfileCount)}
+                    </span>
                   </span>
-                  {profileCount === 0 ? (
+                  {noLocalProfiles ? (
+                    <button
+                      type="button"
+                      className="btn-bordered-prominent"
+                      disabled={creatingDefaultProfiles}
+                      onClick={createDefaultProfilesHere}
+                    >
+                      {creatingDefaultProfiles && <Spinner size={13} />}
+                      {creatingDefaultProfiles ? "Creating…" : "Create default profiles"}
+                    </button>
+                  ) : profileCount === 0 ? (
                     <button type="button" className="btn-bordered" onClick={openProfileSetup}>
                       Set up profile
                       <Icon name="chevron.right" size={13} />
@@ -426,7 +452,12 @@ export function OnboardingView() {
                     <UserFacingError message={setupError} surface="onboarding" />
                   </div>
                 )}
-                {profileCount > 0 && (
+                {noLocalProfiles && defaultProfilesError && (
+                  <div className="onboarding-setup-error error small" role="alert">
+                    <UserFacingError message={defaultProfilesError} surface="onboarding" />
+                  </div>
+                )}
+                {(profileCount > 0 || noLocalProfiles) && (
                   <button type="button" className="btn-bordered onboarding-profile-create" onClick={openProfileSetup}>
                     <Icon name="plus" size={13} />
                     Create a profile

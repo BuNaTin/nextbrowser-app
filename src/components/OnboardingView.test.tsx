@@ -37,6 +37,10 @@ const { state } = vi.hoisted(() => {
     setOnboardingStepIndex: () => undefined,
     suspendOnboardingForSetup: () => undefined,
     onboardingSetupError: undefined as string | undefined,
+    profilesLoaded: false,
+    workspaceSetupAuto: "done",
+    defaultProfilesCreating: false,
+    defaultProfilesError: undefined as string | undefined,
   };
   return { state };
 });
@@ -60,6 +64,9 @@ describe("agent onboarding step", () => {
     state.selectedProfile = undefined;
     state.statuses = {};
     state.onboardingSetupError = undefined;
+    state.profilesLoaded = false;
+    state.defaultProfilesCreating = false;
+    state.defaultProfilesError = undefined;
   });
 
   it("shows a compact connected state without setup copy or permanent links", () => {
@@ -149,6 +156,35 @@ describe("agent onboarding step", () => {
     expect(html).toContain("Clawbrowser · Running");
     expect(html).not.toContain("Start profile");
     expect(html).toContain("Create a profile");
+  });
+
+  it("explains that profiles stay on the computer that created them", () => {
+    state.onboardingStepIndex = 2;
+    state.profilesLoaded = true;
+
+    const html = renderToStaticMarkup(<OnboardingView />);
+
+    expect(html).toContain("No profiles on this computer");
+    expect(html).toContain("Profiles stay on the computer where they were created.");
+    expect(html).toMatch(/<button type="button" class="btn-bordered-prominent">Create default profiles<\/button>/);
+    expect(html).toContain("Create a profile");
+    expect(html).not.toContain("Set up profile");
+    expect(html).not.toContain("No saved profiles");
+  });
+
+  it("shows the default profiles being created, and why they could not be", () => {
+    state.onboardingStepIndex = 2;
+    state.profilesLoaded = true;
+    state.defaultProfilesCreating = true;
+
+    expect(renderToStaticMarkup(<OnboardingView />)).toMatch(/disabled="">.*Creating…<\/button>/);
+
+    state.defaultProfilesCreating = false;
+    state.defaultProfilesError = "We couldn't create the profiles. Ref: NB-0000ABCD";
+
+    const html = renderToStaticMarkup(<OnboardingView />);
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("We couldn&#x27;t create the profiles.");
   });
 
   it("keeps the first task compact and offers a cancellable Chat handoff", () => {

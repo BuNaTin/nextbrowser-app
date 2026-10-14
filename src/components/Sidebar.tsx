@@ -16,6 +16,7 @@ import { isProxyTrafficExhaustedError, isProxyTrafficGateMessage, proxyTrafficLa
 import { MULTILOGIN_APP_NOT_RUNNING, userFacingMultiloginError } from "../lib/userFacingMultiloginError";
 import { openMultiloginApp } from "../lib/multiloginApp";
 import { entityNameLimits, validateEntityName } from "../lib/entityValidation";
+import { workspaceHasNoLocalProfiles } from "../lib/workspaceProfiles";
 import { cancelNextctlRun } from "../nextctl";
 import { conversationPreview, type AppTab, type BrowserWorkflowAction, type BrowserWorkflowSkill } from "../types";
 import { CountrySelect } from "./CountrySelect";
@@ -423,6 +424,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
     ? workspaceMultilogin
     : undefined;
   const workspaceProfileCount = visibleProfileCount + (workspaceMultilogin ? 1 : 0);
+  const noLocalProfiles = workspaceProfileCount === 0 && workspaceHasNoLocalProfiles(s);
   const multiloginBrowserProfiles = multiloginStatus?.browserProfiles ?? [];
   const multiloginCloudPhones = multiloginStatus?.cloudPhones ?? [];
   const multiloginKindProfiles = multiloginKind === "browser" ? multiloginBrowserProfiles : multiloginCloudPhones;
@@ -1627,7 +1629,27 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
                 )}
                 </div>
               </div>
-              {profilesOpen && workspaceProfileCount === 0 && <div className="muted small workspace-empty">No profiles yet</div>}
+              {profilesOpen && noLocalProfiles && (
+                <div className="workspace-empty local-profiles-empty">
+                  <strong>No profiles on this computer</strong>
+                  <span className="muted small">Profiles stay on the computer where they were created.</span>
+                  <button
+                    type="button"
+                    className="btn-bordered"
+                    disabled={s.defaultProfilesCreating}
+                    onClick={() => void s.createDefaultProfiles()}
+                  >
+                    {s.defaultProfilesCreating ? <Spinner size={12} /> : <Icon name="plus" size={12} />}
+                    {s.defaultProfilesCreating ? "Creating…" : "Create default profiles"}
+                  </button>
+                  {s.defaultProfilesError && (
+                    <div className="error small" role="alert">
+                      <UserFacingError message={s.defaultProfilesError} surface="default_profiles" />
+                    </div>
+                  )}
+                </div>
+              )}
+              {profilesOpen && workspaceProfileCount === 0 && !noLocalProfiles && <div className="muted small workspace-empty">No profiles yet</div>}
             </section>
             {normalizedSearch && visibleChats.length === 0 && visibleWorkspaceProfiles.length === 0 && !multiloginRow && (
               <div className="muted small">No matches for "{s.profileSearch}".</div>

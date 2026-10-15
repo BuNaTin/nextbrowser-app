@@ -78,3 +78,18 @@ export function trafficGateStateLabel(proxyTraffic?: ProxyTraffic | null): strin
   if (state === "gated") return "ok";
   return proxyTraffic?.state ?? "unknown";
 }
+
+export type TrafficGateTone = "ok" | "warn" | "paused" | "neutral";
+
+/** How the state label should look: only traffic that can still be used looks healthy. */
+export function trafficGateStateTone(proxyTraffic?: ProxyTraffic | null): TrafficGateTone {
+  const state = trafficGateState(proxyTraffic);
+  if (state === "blocked") return "paused";
+  if (state === "gated") return "ok";
+  switch (proxyTraffic?.state) {
+    case "ok": return "ok";
+    case "near_limit": return "warn";
+    case "exhausted": return "paused";
+    default: return "neutral";
+  }
+}

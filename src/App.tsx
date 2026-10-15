@@ -19,7 +19,7 @@ import { BrandLogo } from "./components/BrandLogo";
 import { Icon, Spinner } from "./components/Icon";
 import { AgentPicker } from "./components/AgentPicker";
 import { brandName, discordUrl, latestReleaseUrl, repoUrl } from "./constants";
-import { trafficAllowanceBytes, trafficAllowanceFraction, trafficGateState, trafficGateStateLabel } from "./lib/trafficGate";
+import { trafficAllowanceBytes, trafficAllowanceFraction, trafficGateState, trafficGateStateLabel, trafficGateStateTone } from "./lib/trafficGate";
 import { getPreviewMode, getPreviewNodeMavenState, getPreviewTab } from "./preview";
 import { humanBytes, type AppTab, type Conversation } from "./types";
 import { resolveTheme, type Theme } from "./theme";
@@ -685,9 +685,13 @@ function SettingsModal({
           </div>
           <div className="settings-row">
             <span className="muted small">Proxy</span>
-            <span className={proxy ? "ok small" : "muted small"}>
-              {proxy ? proxy.state : "locked"}
-            </span>
+            {proxy ? (
+              <span className={`status-pill proxy-state ${trafficGateStateTone(proxy)}`}>
+                {trafficGateStateLabel(proxy)}
+              </span>
+            ) : (
+              <span className="muted small">locked</span>
+            )}
           </div>
         </div>
 

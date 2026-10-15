@@ -120,6 +120,7 @@ const {
   adaptDasbrowserArgs,
   dasbrowserAppCopyOptions,
   dasbrowserReleaseVersion,
+  installedDasbrowserReleaseVersion,
   officialDasbrowserURLFromHTML,
   requestedBrowserRuntime,
   resolveDasbrowserRuntime,
@@ -1307,6 +1308,10 @@ function startAutoUpdater() {
 async function installedDasbrowserVersion() {
   const executable = resolveDasbrowserRuntime(dasbrowserRuntimeOptions());
   if (!executable) return "";
+  // The installed browser names its own release. The metadata below only
+  // records what this app last downloaded, and DasBrowser updates itself.
+  const installed = await installedDasbrowserReleaseVersion(executable);
+  if (installed) return installed;
   try {
     const metadata = JSON.parse(await fs.readFile(path.join(nextbrowserRuntimeRoot(), "data", ".dasbrowser-browser-release.json"), "utf8"));
     return String(metadata?.version || "").trim();

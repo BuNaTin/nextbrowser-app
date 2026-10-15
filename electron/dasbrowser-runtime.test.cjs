@@ -7,6 +7,7 @@ const {
   adaptDasbrowserArgs,
   dasbrowserAppCopyOptions,
   dasbrowserReleaseVersion,
+  installedDasbrowserReleaseVersion,
   officialDasbrowserURLFromHTML,
   requestedBrowserRuntime,
   resolveDasbrowserRuntime,
@@ -39,6 +40,36 @@ test("detects DasBrowser installed by the current Windows setup as chrome.exe", 
     resolveDasbrowserRuntime({ platform: "win32", homeDir: root, env: { LOCALAPPDATA: local }, runtimeRoot: path.join(root, "runtime") }),
     path.resolve(executable),
   );
+});
+
+test("reads the installed DasBrowser release next to the Windows launcher", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "nextbrowser-dasbrowser-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const application = path.join(root, "Dasbrowser", "Application");
+  const executable = path.join(application, "chrome.exe");
+  fs.mkdirSync(path.join(application, "9.0.100.1"), { recursive: true });
+  fs.mkdirSync(path.join(application, "151.0.7922.113"), { recursive: true });
+  fs.mkdirSync(path.join(application, "150.0.7871.125"), { recursive: true });
+  fs.writeFileSync(executable, "binary");
+  fs.writeFileSync(path.join(application, "9.0.100.1", "dasbrowser_version.txt"), "9.1");
+  fs.writeFileSync(path.join(application, "150.0.7871.125", "dasbrowser_version.txt"), "150.4");
+  // A self-update leaves the previous Chromium folder beside the new one.
+  fs.writeFileSync(path.join(application, "151.0.7922.113", "dasbrowser_version.txt"), "151.4\r\n");
+  assert.equal(await installedDasbrowserReleaseVersion(executable), "151.4");
+
+  fs.writeFileSync(path.join(application, "151.0.7922.113", "dasbrowser_version.txt"), "unknown");
+  assert.equal(await installedDasbrowserReleaseVersion(executable), "150.4");
+});
+
+test("reports no DasBrowser release when the install has no release file", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "nextbrowser-dasbrowser-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const application = path.join(root, "Dasbrowser", "Application");
+  fs.mkdirSync(path.join(application, "151.0.7922.113"), { recursive: true });
+  fs.writeFileSync(path.join(application, "chrome.exe"), "binary");
+  assert.equal(await installedDasbrowserReleaseVersion(path.join(application, "chrome.exe")), "");
+  assert.equal(await installedDasbrowserReleaseVersion(path.join(root, "missing", "chrome.exe")), "");
+  assert.equal(await installedDasbrowserReleaseVersion(""), "");
 });
 
 test("adapts the app toolset to nextctl's chromium CDP runtime", () => {

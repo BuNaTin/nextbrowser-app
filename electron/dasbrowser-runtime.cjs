@@ -61,6 +61,46 @@ function resolveDasbrowserRuntime(options) {
   return null;
 }
 
+function compareVersionFoldersDescending(left, right) {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (b[index] || 0) - (a[index] || 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+// The Windows setup keeps the public DasBrowser release (the version the
+// download page lists, e.g. 151.4) in dasbrowser_version.txt inside the
+// Chromium version folder next to the launcher:
+// Application\151.0.7922.113\dasbrowser_version.txt. The Chromium version is
+// not the release and must not be compared with it. A self-update adds the
+// new folder beside the old one, so the newest folder is the installed release.
+async function installedDasbrowserReleaseVersion(executable) {
+  if (!executable) return "";
+  const applicationDir = path.dirname(path.resolve(executable));
+  let entries;
+  try {
+    entries = await fs.promises.readdir(applicationDir, { withFileTypes: true });
+  } catch {
+    return "";
+  }
+  const versionFolders = entries
+    .filter((entry) => entry.isDirectory() && /^\d+(?:\.\d+){3}$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort(compareVersionFoldersDescending);
+  for (const folder of versionFolders) {
+    try {
+      const version = (await fs.promises.readFile(path.join(applicationDir, folder, "dasbrowser_version.txt"), "utf8")).trim();
+      if (/^\d+(?:\.\d+)+$/.test(version)) return version;
+    } catch {
+      // Older installs have no release file; try the next folder.
+    }
+  }
+  return "";
+}
+
 function requestedBrowserRuntime(args = []) {
   const index = args.indexOf("--runtime");
   return index >= 0 ? String(args[index + 1] || "").toLowerCase() : "clawbrowser";
@@ -97,6 +137,7 @@ module.exports = {
   dasbrowserAppCopyOptions,
   dasbrowserReleaseVersion,
   dasbrowserRuntimeCandidates,
+  installedDasbrowserReleaseVersion,
   officialDasbrowserURLFromHTML,
   requestedBrowserRuntime,
   resolveDasbrowserRuntime,

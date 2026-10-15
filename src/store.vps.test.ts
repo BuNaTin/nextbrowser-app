@@ -454,6 +454,37 @@ describe("VPS execution target isolation", () => {
     expect(bridge.invoke.mock.calls.some(([command]) => String(command).startsWith("nextctl_"))).toBe(false);
   });
 
+  it("logs why the agent could not start and keeps the reply to the reference", async () => {
+    const remote = conversation("remote", "vps", [
+      message("user", "user", "Run the recording again"),
+      { ...message("reply", "assistant", ""), status: "queued" },
+    ]);
+    useStore.setState({ conversations: [remote], activeConvId: { codex: remote.id } });
+    const cause = new Error("spawn codex ENOENT");
+    bridge.invoke.mockImplementation((command) => command === "agent_run"
+      ? Promise.reject(cause)
+      : Promise.resolve(null));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      await useStore.getState().processItem("codex", {
+        conversationId: remote.id,
+        rawText: "Run the recording again",
+        replyId: "reply",
+        executionTarget: "vps",
+      });
+
+      const reply = useStore.getState().conversations[0].messages[1];
+      expect(reply.status).toBe("failed");
+      expect(reply.text).toMatch(/We couldn't start the agent\. Ref: NB-[A-F0-9]{8}$/);
+      expect(reply.text).not.toContain("ENOENT");
+      const ref = reply.text.match(/NB-[A-F0-9]{8}/)?.[0];
+      expect(consoleError).toHaveBeenCalledWith(`[AGENT_START_FAILED] ${ref} codex agent_run`, cause);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("finishes a reply from the agent process result when the done event is missed", async () => {
     const remote = conversation("remote", "vps", [
       message("user", "user", "Start the selected cloud phone"),
@@ -1027,7 +1058,7 @@ describe("browser profile creation", () => {
       }],
     });
     bridge.invoke.mockResolvedValue({
-      stdout: JSON.stringify({ ok: true, data: { profiles: [] } }),
+      stdout: JSON.stringify({ ok: true, data: { profiles: [{ name: "existing", country: "US" }] } }),
       stderr: "",
       code: 0,
     });

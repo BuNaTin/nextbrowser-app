@@ -57,7 +57,10 @@ export function trafficAllowanceBytes(proxyTraffic?: ProxyTraffic | null): numbe
 export function trafficAllowanceRemainingBytes(proxyTraffic?: ProxyTraffic | null): number | null {
   const allowanceBytes = trafficAllowanceBytes(proxyTraffic);
   if (allowanceBytes == null || !proxyTraffic) return null;
-  if (trafficGateState(proxyTraffic) === "open" && proxyTraffic.remaining_bytes != null) {
+  const state = trafficGateState(proxyTraffic);
+  // The rest of the shown allowance is not usable while the gate is closed.
+  if (state === "blocked") return 0;
+  if (state === "open" && proxyTraffic.remaining_bytes != null) {
     return Math.max(proxyTraffic.remaining_bytes, 0);
   }
   return Math.max(allowanceBytes - proxyTraffic.used_bytes, 0);
@@ -74,4 +77,19 @@ export function trafficGateStateLabel(proxyTraffic?: ProxyTraffic | null): strin
   if (state === "blocked") return "paused";
   if (state === "gated") return "ok";
   return proxyTraffic?.state ?? "unknown";
+}
+
+export type TrafficGateTone = "ok" | "warn" | "paused" | "neutral";
+
+/** How the state label should look: only traffic that can still be used looks healthy. */
+export function trafficGateStateTone(proxyTraffic?: ProxyTraffic | null): TrafficGateTone {
+  const state = trafficGateState(proxyTraffic);
+  if (state === "blocked") return "paused";
+  if (state === "gated") return "ok";
+  switch (proxyTraffic?.state) {
+    case "ok": return "ok";
+    case "near_limit": return "warn";
+    case "exhausted": return "paused";
+    default: return "neutral";
+  }
 }

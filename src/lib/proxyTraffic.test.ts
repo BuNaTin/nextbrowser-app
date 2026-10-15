@@ -169,7 +169,7 @@ describe("proxy traffic domain sorting", () => {
 });
 
 describe("proxy traffic warning", () => {
-  it("asks a blocked account to reach out in Discord", () => {
+  it("asks a blocked account to star the repo for 1 GB", () => {
     expect(proxyTrafficWarning({
       limited: true,
       used_bytes: 37 * 1024 * 1024,
@@ -177,7 +177,7 @@ describe("proxy traffic warning", () => {
       remaining_bytes: 0,
       percent_used: 100,
       state: "exhausted",
-    })).toBe("Free traffic is paused. Ask in Discord to unlock the rest.");
+    })).toBe("Free traffic is paused. Connect GitHub and star nextbrowser-oss/nextbrowser-app to get 1 GB.");
   });
 
   it("stays quiet while a gated account still has traffic", () => {

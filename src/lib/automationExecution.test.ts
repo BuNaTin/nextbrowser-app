@@ -5,6 +5,7 @@ import {
   automationAgentBrowserActionCount,
   automationExecutionTimeline,
   automationExecutionView,
+  browserActionTool,
   canContinueWithoutRemoteRunHistory,
   executionWithRecipeProgress,
   type AutomationExecution,
@@ -115,6 +116,32 @@ describe("automation execution indicator", () => {
 
   it("reports action-based progress while a workflow runs", () => {
     expect(automationExecutionView(execution, [conversation("streaming", 2)], 150)).toMatchObject({ phase: "running", progress: 55 });
+  });
+
+  it("reads the browser tool from a live agent step as well as a recorded event", () => {
+    const step = (detail: string) => ({ id: detail, name: "step", detail, createdAt: 1 });
+    expect(browserActionTool(step("clawbrowser: navigate https://example.com"))).toBe("navigate");
+    expect(browserActionTool(step("clawbrowser: save artifact products.json"))).toBe("save_artifact");
+    expect(browserActionTool(step("plugin_clawbrowser_clawbrowser: open https://example.com"))).toBe("open");
+    expect(browserActionTool(step("nextbrowser: paginate extract"))).toBe("paginate_extract");
+    expect(browserActionTool(step("clawbrowser: status"))).toBeUndefined();
+    expect(browserActionTool(step("Read AGENTS.md"))).toBeUndefined();
+    expect(browserActionTool({ id: "n", name: "nextctl", detail: "nextctl open https://example.com", createdAt: 1 })).toBeUndefined();
+    expect(browserActionTool({ id: "a", name: "clawbrowser.act", createdAt: 1 })).toBe("act");
+    expect(browserActionTool({ id: "s", name: "clawbrowser.start", createdAt: 1 })).toBeUndefined();
+  });
+
+  it("counts a live AI repair's browser steps so a working repair is not treated as stalled", () => {
+    const live = conversation("streaming");
+    live.messages[1].toolEvents = [
+      { id: "plan", name: "step", detail: "Updated its plan", createdAt: 120 },
+      { id: "open", name: "step", detail: "clawbrowser: open https://example.com", createdAt: 121 },
+      { id: "extract", name: "step", detail: "clawbrowser: extract", createdAt: 122 },
+    ];
+    const repair = { ...execution, engine: "agent" as const, replyId: "answer" };
+
+    expect(automationAgentBrowserActionCount(repair, [live])).toBe(2);
+    expect(automationExecutionTimeline(repair, [live]).map((event) => event.title)).toEqual(["open", "extract"]);
   });
 
   it("does not count browser setup and inspection noise as completed workflow steps", () => {

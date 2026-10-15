@@ -51,7 +51,7 @@ describe("agent invocation parity", () => {
     expect(missingAgentInstallError(new Error("spawn failed with secret details"), agentById("codex"))).toBeUndefined();
   });
   it.each([
-    ["claude", ["-p", "--dangerously-skip-permissions", "hello"], undefined],
+    ["claude", ["-p", "--dangerously-skip-permissions"], "hello"],
     ["codex", ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-"], "hello"],
     ["hermes", ["-z", "hello"], undefined],
     ["kilo", ["run", "hello"], undefined],
@@ -69,7 +69,8 @@ describe("agent invocation parity", () => {
 
   it("asks Claude for its event stream when the chat shows steps", () => {
     expect(agentInvocation(agentById("claude"), "hello", { steps: true })).toEqual({
-      args: ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose", "hello"],
+      args: ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
+      stdin: "hello",
       stepFormat: "claude-stream-json",
     });
   });
@@ -80,6 +81,18 @@ describe("agent invocation parity", () => {
       stdin: "hello",
       stepFormat: "codex-stderr",
     });
+  });
+
+  it("keeps a long prompt out of the Claude and Codex command lines", () => {
+    // Windows refuses to spawn a command line past 32,767 characters.
+    const prompt = "x".repeat(40_000);
+    for (const id of ["claude", "codex"]) {
+      for (const steps of [false, true]) {
+        const invocation = agentInvocation(agentById(id), prompt, { steps });
+        expect(invocation.stdin).toBe(prompt);
+        expect(invocation.args.join(" ").length).toBeLessThan(200);
+      }
+    }
   });
 
   it("leaves agents without a step decoder unchanged", () => {

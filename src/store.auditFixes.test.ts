@@ -347,3 +347,74 @@ it("deletes the private cloud copy of a custom script", async () => {
       && (args as { args: string[] }).args[0] === "skill" && (args as { args: string[] }).args[1] === "delete");
   expect(deletedCloud).toBe(true);
 });
+
+it("does not ask for first-run defaults after the account deletes its last workspace", async () => {
+  const storage = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  });
+  const { useStore } = await import("./store");
+  useStore.setState({ accountOwnerId: "owner-a", workspaces: [workspace("a")], activeWorkspaceId: "a", conversations: [], deleteProfile: vi.fn().mockResolvedValue(undefined) });
+  await useStore.getState().deleteWorkspace("a");
+  expect(useStore.getState().workspaces).toEqual([]);
+  expect(useStore.getState().workspaceSetupRequired).toBe(false);
+});
+
+it("drops a workspace deleted on another device instead of uploading it again", async () => {
+  const storage = new Map<string, string>([["syncedWorkspaceIds:v1", JSON.stringify(["gone", "kept"])]]);
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  });
+  const keptCloud = { id: "kept", name: "kept", revision: 2, created_at: new Date(1).toISOString(), updated_at: new Date(5).toISOString(), document: { profileNames: [], profileToolsets: {} } };
+  bridge.invoke.mockImplementation(async (command: string) => {
+    if (command === "workspaces_list") return { workspaces: [keptCloud] };
+    if (command === "projects_list") return { projects: [] };
+    return { revision: 1 };
+  });
+  const { useStore } = await import("./store");
+  // A fresh start: the workspace is only in the local cache, revisions are empty.
+  useStore.setState({
+    authed: true, projectsSyncing: false, workspaceRevisions: {}, activeWorkspaceId: "gone",
+    workspaces: [{ ...workspace("gone"), updatedAt: 10 }, { ...workspace("kept"), profileNames: [], updatedAt: 5 }],
+    conversations: [{ id: "gone-chat", workspaceId: "gone", agent: "claude", messages: [], createdAt: 1, updatedAt: 1 }],
+  } as any);
+  await useStore.getState().syncProjects();
+  expect(bridge.invoke).not.toHaveBeenCalledWith("workspace_put", expect.objectContaining({ id: "gone" }));
+  expect(useStore.getState().workspaces.map((item) => item.id)).toEqual(["kept"]);
+  expect(useStore.getState().conversations).toEqual([]);
+  expect(JSON.parse(storage.get("deletedWorkspaceIds:v1") || "[]")).toContain("gone");
+});
+
+it("keeps a profile moved to another workspace out of the source after a revision conflict", async () => {
+  const cloudDoc = (id: string, profileNames: string[], revision: number) => ({
+    id, name: id, revision, created_at: new Date(1).toISOString(), updated_at: new Date(2).toISOString(),
+    document: { profileNames, profileToolsets: Object.fromEntries(profileNames.map((name) => [name, "clawbrowser"])) },
+  });
+  let conflictOnce = true;
+  const puts: Array<{ id: string; names: string[] }> = [];
+  bridge.invoke.mockImplementation(async (command: string, args: any) => {
+    // Another device edited workspace "a" meanwhile (its copy still lists "p").
+    if (command === "workspaces_list") return { workspaces: [cloudDoc("a", ["p", "other-device"], 7), cloudDoc("b", [], 3)] };
+    if (command === "workspace_put") {
+      if (args.id === "a" && conflictOnce) { conflictOnce = false; throw new Error("workspace revision conflict"); }
+      puts.push({ id: args.id, names: args.workspace.document.profileNames });
+      return { revision: 9 };
+    }
+    if (command === "projects_list") return { projects: [] };
+    return { revision: 1 };
+  });
+  const { useStore } = await import("./store");
+  useStore.setState({
+    authed: true, projectsSyncing: false, conversations: [], statuses: {}, profileSessions: {},
+    workspaces: [{ ...workspace("a"), profileNames: ["p"], profileToolsets: { p: "clawbrowser" }, updatedAt: 2 }, { ...workspace("b"), profileNames: [], updatedAt: 2 }],
+    workspaceRevisions: { a: 5, b: 3 }, activeWorkspaceId: "a",
+  } as any);
+  await useStore.getState().moveProfileToWorkspace("p", "b");
+  const a = useStore.getState().workspaces.find((item) => item.id === "a")!;
+  expect(a.profileNames).toEqual(["other-device"]);
+  expect(puts.find((put) => put.id === "a")?.names).toEqual(["other-device"]);
+});

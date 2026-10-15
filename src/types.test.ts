@@ -32,13 +32,18 @@ describe("Swift-compatible model helpers", () => {
   it("matches weekday summaries and ISO country formatting", () => {
     expect(weekdaysSummary([2, 3, 4, 5, 6])).toBe("Mon–Fri");
     expect(weekdaysSummary([1, 7])).toBe("Weekends");
-    expect(countryFlag("es")).toBe("🇪🇸");
-    expect(countryLabel("es", "Madrid")).toBe("🇪🇸 ES Madrid");
+    expect(countryFlag("es", true)).toBe("🇪🇸");
+    // Windows renders flag emoji as letters; the badge then shows only the code.
+    expect(countryFlag("es", false)).toBe("");
+    expect(countryLabel("es", "Madrid")).toBe(`${countryFlag("es") ? "🇪🇸 " : ""}ES Madrid`);
     expect(ROTATION_COUNTRIES).toHaveLength(249);
     expect(new Set(ROTATION_COUNTRIES.map((country) => country.code)).size).toBe(249);
     expect(filterCountries("cote").map((country) => country.code)).toContain("CI");
     expect(filterCountries("united").map((country) => country.code)).toEqual(expect.arrayContaining(["GB", "US"]));
     expect(filterCountries("jp").map((country) => country.code)).toEqual(["JP"]);
+    // An exact ISO code comes first, so "ge" picks Georgia, not Germany.
+    expect(filterCountries("ge")[0].code).toBe("GE");
+    expect(filterCountries("pl")[0].code).toBe("PL");
     expect(ROTATION_COUNTRIES.map((c) => c.name)).toEqual(
       [...ROTATION_COUNTRIES.map((c) => c.name)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
     );

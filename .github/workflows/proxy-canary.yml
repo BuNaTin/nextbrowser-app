@@ -109,9 +109,10 @@ jobs:
         run: |
           set -euo pipefail
           # Pick the newest non-prerelease ClawBrowser release that ships a
-          # Linux x64 archive (the project publishes one release per OS).
+          # Linux x64 archive. Releases since 1.0.10 also ship linux-arm64,
+          # which the x64 runner cannot execute, so match x64 exactly.
           info="$(gh api 'repos/clawbrowser/clawbrowser/releases?per_page=100' \
-            --jq '[.[]|select(.draft==false and .prerelease==false)|select(any(.assets[];.name|test("^clawbrowser-linux.*\\.tar\\.gz$")))]|sort_by(.published_at)|reverse|.[0]|[.tag_name,([.assets[].name|select(test("^clawbrowser-linux.*\\.tar\\.gz$"))][0])]|@tsv')"
+            --jq '[.[]|select(.draft==false and .prerelease==false)|select(any(.assets[];.name|test("^clawbrowser-linux-x64\\.tar\\.gz$")))]|sort_by(.published_at)|reverse|.[0]|[.tag_name,([.assets[].name|select(test("^clawbrowser-linux-x64\\.tar\\.gz$"))][0])]|@tsv')"
           tag="$(printf '%s' "$info" | cut -f1)"
           asset="$(printf '%s' "$info" | cut -f2)"
           if [ -z "$tag" ] || [ -z "$asset" ]; then

@@ -7,6 +7,7 @@ import {
   trafficAllowanceRemainingBytes,
   trafficGateState,
   trafficGateStateLabel,
+  trafficGateStateTone,
 } from "./trafficGate";
 
 const mebibyte = 1024 * 1024;
@@ -90,9 +91,25 @@ describe("displayed allowance", () => {
     });
 
     expect(trafficAllowanceBytes(gated)).toBe(freeTrafficAllowanceBytes);
-    expect(trafficAllowanceRemainingBytes(gated)).toBe(freeTrafficAllowanceBytes - 37 * mebibyte);
     expect(Math.round(trafficAllowanceFraction(gated) * 100)).toBe(4);
     expect(trafficGateStateLabel(gated)).toBe("paused");
+  });
+
+  it("leaves nothing remaining while the gate is closed", () => {
+    const paused = proxy({
+      used_bytes: 134 * mebibyte,
+      limit_bytes: 134 * mebibyte,
+      remaining_bytes: 0,
+      state: "exhausted",
+    });
+    expect(trafficAllowanceRemainingBytes(paused)).toBe(0);
+
+    const inside = proxy({
+      used_bytes: 60 * mebibyte,
+      limit_bytes: 141 * mebibyte,
+      remaining_bytes: 81 * mebibyte,
+    });
+    expect(trafficAllowanceRemainingBytes(inside)).toBe(freeTrafficAllowanceBytes - 60 * mebibyte);
   });
 
   it("keeps the provider allocation for accounts outside the gate", () => {
@@ -114,5 +131,26 @@ describe("displayed allowance", () => {
     expect(trafficAllowanceBytes(unlimited)).toBeNull();
     expect(trafficAllowanceRemainingBytes(unlimited)).toBeNull();
     expect(trafficAllowanceFraction(unlimited)).toBe(0);
+  });
+});
+
+describe("state tone", () => {
+  it("never shows a paused or exhausted allowance as healthy", () => {
+    const paused = proxy({ used_bytes: 134 * mebibyte, limit_bytes: 134 * mebibyte, remaining_bytes: 0, state: "exhausted" });
+    expect(trafficGateStateLabel(paused)).toBe("paused");
+    expect(trafficGateStateTone(paused)).toBe("paused");
+
+    const exhausted = proxy({ used_bytes: 3 * 1024 * mebibyte, limit_bytes: 3 * 1024 * mebibyte, remaining_bytes: 0, state: "exhausted" });
+    expect(trafficGateStateLabel(exhausted)).toBe("exhausted");
+    expect(trafficGateStateTone(exhausted)).toBe("paused");
+
+    expect(trafficGateStateTone(proxy({ limit_bytes: 3 * 1024 * mebibyte, state: "near_limit" }))).toBe("warn");
+    expect(trafficGateStateTone(proxy({ state: "unavailable" }))).toBe("neutral");
+  });
+
+  it("shows usable traffic as healthy, including a gate that is still open", () => {
+    expect(trafficGateStateTone(proxy({ limit_bytes: 3 * 1024 * mebibyte, state: "ok" }))).toBe("ok");
+    expect(trafficGateStateTone(proxy({ used_bytes: 60 * mebibyte, limit_bytes: 141 * mebibyte, remaining_bytes: 81 * mebibyte, state: "near_limit" }))).toBe("ok");
+    expect(trafficGateStateTone(proxy({ limited: false }))).toBe("ok");
   });
 });

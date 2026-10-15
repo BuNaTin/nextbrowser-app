@@ -1,6 +1,6 @@
-import { type DragEvent, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useStore, type ManualProxyProfileInput } from "../store";
+import { personalProxyUsers, useStore, type ManualProxyProfileInput } from "../store";
 import { agentById } from "../agents";
 import { shouldDismissModalWithEscape } from "../lib/modalKeyboard";
 import { BrandHeader, BrandLogo } from "./BrandLogo";
@@ -8,6 +8,7 @@ import { Icon, Spinner } from "./Icon";
 import { withLocalScripts } from "../skillsCatalog";
 import { countryFlag, countryLabel, ROTATION_COUNTRIES } from "../lib/countryFlag";
 import { guideProfileTarget, guideWorkspaceProfileNames } from "../lib/guideQuickStart";
+import { profileRowStatusText } from "../lib/profileRowStatus";
 import { manualProxyDefaultName, manualProxyLimits, parseManualProxyBatch, parseManualProxyClipboard, validateManualProxyFields, type ManualProxyScheme } from "../lib/manualProxy";
 import { actionFailureMessage, internalError } from "../lib/userFacingError";
 import { userFacingBrowserError } from "../lib/userFacingBrowserError";
@@ -19,6 +20,7 @@ import { cancelNextctlRun } from "../nextctl";
 import { conversationPreview, type AppTab, type BrowserWorkflowAction, type BrowserWorkflowSkill } from "../types";
 import { CountrySelect } from "./CountrySelect";
 import { PersonalProxySelect } from "./PersonalProxySelect";
+import { PersonalProxyTestStatus, type PersonalProxyTestState } from "./PersonalProxyTestStatus";
 import { UserFacingError } from "./UserFacingError";
 import { VPSSetupModal } from "./VPSSetupModal";
 import { CONNECTOR_PROMPT_RESUMED_EVENT, CONNECTORS } from "../connectorsCatalog";
@@ -59,6 +61,8 @@ import { automationRepairTask, parseAutomationRepairRecipe } from "../lib/automa
 type ManualProxyInputMode = "url" | "fields" | "bulk";
 type ProfileToolsetOption = "clawbrowser" | "dasbrowser" | "camoufox" | "multilogin";
 const PROFILE_CREATE_TIMEOUT_MS = 120_000;
+// How long a passed proxy test stays on screen; a failure stays until the next test.
+const PROXY_TEST_RESULT_MS = 30_000;
 
 function recordingDuration(startedAt: number, now = Date.now()) {
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
@@ -83,6 +87,8 @@ function multiloginCreationError(error: unknown, kind: MultiloginProfileKind): s
 interface SidebarProps {
   onOpenAgentSettings: () => void;
   onHome: () => void;
+  /** Rendered right of the agent status in the footer, e.g. the interface size control, so nothing floats over the footer. */
+  footerAccessory?: ReactNode;
 }
 
 const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: string }> = [
@@ -92,7 +98,9 @@ const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: string }> = [
   { id: "guide", label: "Guide", icon: "book.fill" },
 ];
 
-export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
+const SIDEBAR_OPEN_SECTION_KEY = "sidebar.openSection";
+
+export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: SidebarProps) {
   const s = useStore();
   const [menuProfile, setMenuProfile] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -115,7 +123,7 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
   const [manualProxyEditing, setManualProxyEditing] = useState(false);
   const [manualProxyDeleting, setManualProxyDeleting] = useState<string | null>(null);
   const [manualProxyDeletePending, setManualProxyDeletePending] = useState(false);
-  const [proxyTestResults, setProxyTestResults] = useState<Record<string, { status: "testing" | "ok" | "fail"; detail: string }>>({});
+  const [proxyTestResults, setProxyTestResults] = useState<Record<string, PersonalProxyTestState>>({});
   const [createProfileOpen, setCreateProfileOpen] = useState(false);
   const [vpsSetupOpen, setVPSSetupOpen] = useState(false);
   const [profileName, setProfileName] = useState("");
@@ -152,7 +160,24 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [chatDeleteError, setChatDeleteError] = useState<string | null>(null);
   const [chatDeleting, setChatDeleting] = useState(false);
-  const [openSection, setOpenSection] = useState<"projects" | "profiles" | null>("projects");
+  // Remember which list the user expanded across reloads and restarts.
+  const [openSection, setOpenSectionState] = useState<"projects" | "profiles" | null>(() => {
+    try {
+      const saved = localStorage.getItem(SIDEBAR_OPEN_SECTION_KEY);
+      return saved === "profiles" ? "profiles" : saved === "none" ? null : "projects";
+    } catch {
+      return "projects";
+    }
+  });
+  const setOpenSection = (next: "projects" | "profiles" | null | ((current: "projects" | "profiles" | null) => "projects" | "profiles" | null)) => {
+    setOpenSectionState((current) => {
+      const value = typeof next === "function" ? next(current) : next;
+      try {
+        localStorage.setItem(SIDEBAR_OPEN_SECTION_KEY, value ?? "none");
+      } catch { /* the choice then lasts for this session */ }
+      return value;
+    });
+  };
   const [dragOverProfileName, setDragOverProfileName] = useState<string | null>(null);
   const [profileGuideFocus, setProfileGuideFocus] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
@@ -163,6 +188,8 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
   const [recordingError, setRecordingError] = useState<string>();
   const [automationExecution, setAutomationExecution] = useState<AutomationExecution | undefined>(activeAutomationExecution);
   const [automationExecutionClock, setAutomationExecutionClock] = useState(Date.now());
+  // The execution whose stalled AI repair was already stopped (see the stall effect).
+  const stallHandledFor = useRef<string | undefined>(undefined);
   const [automationExecutionError, setAutomationExecutionError] = useState<string>();
   const profileCreateRequestRef = useRef<string | null>(null);
   const createdProfileRequests = useRef(new Map<string, string>());
@@ -175,6 +202,13 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
   const guideFocusTimerRef = useRef(0);
   const workspacePickerRef = useRef<HTMLDivElement | null>(null);
 
+  // Picking the workspace's Multilogin profile makes it the target for chat,
+  // Live, and automation, like selecting a regular profile.
+  const activateWorkspaceMultilogin = (selection: MultiloginProfileSelection) => {
+    if (!s.activeWorkspaceId) return;
+    s.selectProfile(undefined);
+    setMultiloginSelection(s.activeWorkspaceId, { ...selection, active: true });
+  };
   const runProfileAction = (label: string, code: string, action: () => Promise<void>) => {
     setProfileActionError(null);
     void action().catch((error: unknown) => {
@@ -376,7 +410,9 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
     : undefined;
   const multiloginReady = multiloginConnected(multiloginStatus);
   const multiloginExisting = profileToolset === "multilogin" && multiloginMode === "existing";
-  const runningCount = profileWorkspaceEntries.filter(({ profile }) => s.statuses[profile.name] === "running").length;
+  const multiloginRowStatus = workspaceMultilogin ? s.multiloginStatuses[workspaceMultilogin.id] : undefined;
+  const runningCount = profileWorkspaceEntries.filter(({ profile }) => s.statuses[profile.name] === "running").length
+    + (multiloginRowStatus === "running" ? 1 : 0);
   const proxyCountries = s.proxyCountries.length ? s.proxyCountries : ROTATION_COUNTRIES;
   const recordingWorkspace = activeRecording ? s.workspaces.find((workspace) => workspace.id === activeRecording.workspaceId) : undefined;
   const automationExecutionWorkspace = automationExecution ? s.workspaces.find((workspace) => workspace.id === automationExecution.workspaceId) : undefined;
@@ -427,17 +463,24 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
   useEffect(() => {
     if (!automationExecution || automationExecution.engine !== "agent" || !automationExecution.replyId || !automationExecution.repairValidationRequired) return;
     if (!["preparing", "running"].includes(automationExecution.phase) || automationExecutionClock - automationExecution.startedAt < 120_000) return;
-    const answer = automationAgentAnswer(automationExecution, s.conversations);
-    if (!answer || !["queued", "streaming"].includes(answer.status) || automationAgentBrowserActionCount(automationExecution, s.conversations) > 0) return;
+    // Handle a stall once per execution. Stopping the reply writes to the
+    // store, which re-renders and re-runs this effect before the execution
+    // below reaches local state; without the guard each pass stopped the reply
+    // and started another repair until React gave up (error #185, blank UI).
+    if (stallHandledFor.current === automationExecution.executionId) return;
+    const store = useStore.getState();
+    const answer = automationAgentAnswer(automationExecution, store.conversations);
+    if (!answer || !["queued", "streaming"].includes(answer.status) || automationAgentBrowserActionCount(automationExecution, store.conversations) > 0) return;
+    stallHandledFor.current = automationExecution.executionId;
     const attempt = automationExecution.repairAttempt || 0;
-    if (s.cancelQueuedReply(automationExecution.replyId) === false) s.stopReply(automationExecution.replyId);
+    if (store.cancelQueuedReply(automationExecution.replyId) === false) store.stopReply(automationExecution.replyId);
     if (attempt >= 1 || !automationExecution.workflowSnapshot) {
       setActiveAutomationExecution({ ...automationExecution, phase: "failed", progress: 100, detail: "AI repair made no browser progress after two attempts. Retry when the agent is available.", error: "AI repair stalled before its first browser action." });
       return;
     }
     const retrying: AutomationExecution = { ...automationExecution, executionId: uid(), replyId: undefined, startedAt: Date.now(), phase: "preparing", progress: 8, detail: "The first AI repair stalled. Restarting it once automatically…", repairAttempt: 1 };
     setActiveAutomationExecution(retrying);
-    void s.runLocalSkill(automationExecution.workflowSnapshot, automationRepairTask(
+    void store.runLocalSkill(automationExecution.workflowSnapshot, automationRepairTask(
       automationExecution.task,
       automationExecution.workflowSnapshot.actions,
       automationExecution.failedStep,
@@ -448,7 +491,7 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
       if (!replyId) return setActiveAutomationExecution({ ...retrying, phase: "failed", progress: 100, detail: "The automatic AI retry could not be started." });
       setActiveAutomationExecution({ ...retrying, replyId, phase: "running", detail: "AI repair restarted automatically…" });
     }).catch((error) => setActiveAutomationExecution({ ...retrying, phase: "failed", progress: 100, detail: error instanceof Error ? error.message : String(error) }));
-  }, [automationExecution?.executionId, automationExecution?.phase, automationExecution?.replyId, automationExecution?.startedAt, automationExecutionClock, s]);
+  }, [automationExecution?.executionId, automationExecution?.phase, automationExecution?.replyId, automationExecution?.startedAt, automationExecutionClock, s.conversations]);
 
   useEffect(() => {
     if (!automationExecution || automationExecution.engine !== "agent" || !automationExecution.repairValidationRequired || automationExecution.outputValidated || automationExecution.outputValidationError) return;
@@ -675,6 +718,18 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
     return () => window.removeEventListener(MULTILOGIN_SELECTION_EVENT, refreshSelection);
   }, [s.activeWorkspaceId]);
 
+  // The Multilogin profile runs outside the local profile store, so its row
+  // asks nextctl for its state instead of relying on the profile list poll.
+  const workspaceMultiloginId = workspaceMultilogin?.id;
+  useEffect(() => {
+    if (!workspaceMultilogin || !s.authed) return;
+    const refresh = () => { if (!document.hidden) void s.refreshMultiloginStatus(workspaceMultilogin); };
+    refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceMultiloginId, s.authed]);
+
   useEffect(() => {
     if (s.authed) void s.loadPersonalProxies().catch(() => undefined);
   }, [s.authed]);
@@ -857,7 +912,7 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
           const { [id]: _removed, ...rest } = current;
           return rest;
         });
-      }, 10_000);
+      }, PROXY_TEST_RESULT_MS);
     };
     s.testPersonalProxy(id)
       .then((result) => {
@@ -1063,7 +1118,8 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
       setProfileError("Create a workspace before adding a Multilogin profile.");
       return;
     }
-    const invalid = multiloginSubmitError(multiloginMode, "managed", profileCountry, multiloginDraft, multiloginKind);
+    const multiloginConnection = multiloginKind === "browser" && profileConnection === "personal" ? "personal" : "managed";
+    const invalid = multiloginSubmitError(multiloginMode, multiloginConnection, profileCountry, multiloginDraft, multiloginKind, profilePersonalProxyId);
     if (invalid) {
       setProfileError(invalid);
       return;
@@ -1090,7 +1146,8 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
     try {
       const created = await invoke<MultiloginCreatedProfile>(creatingPhone ? "multilogin_mobile_profile_create" : "multilogin_profile_create", {
         name: createdName,
-        country: multiloginCreateCountry("managed", profileCountry),
+        country: multiloginCreateCountry(multiloginConnection, profileCountry),
+        ...(multiloginConnection === "personal" ? { proxyId: profilePersonalProxyId } : {}),
         osType: multiloginOS,
         requestId,
         timeoutMs: PROFILE_CREATE_TIMEOUT_MS,
@@ -1516,15 +1573,20 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
                 })}
                 {multiloginRow && (
                   <ProfileRow
-                    key={multiloginRow.id} name={multiloginRow.name} status="Multilogin"
-                    metaOverride={`Multilogin · ${multiloginRow.kind === "mobile" ? "Cloud phone" : "Mimic browser"}`}
-                    running={false} busy={false} selected={false}
+                    key={multiloginRow.id} name={multiloginRow.name} status={multiloginStatusLabel(multiloginRowStatus)}
+                    metaOverride={`${multiloginStatusLabel(multiloginRowStatus)} · ${multiloginRow.kind === "mobile" ? "Cloud phone" : "Mimic browser"}`}
+                    running={multiloginRowStatus === "running"}
+                    busy={multiloginRowStatus === "starting" || multiloginRowStatus === "stopping"}
+                    selected={multiloginRow.active !== false && !s.selectedProfile}
                     toolset="multilogin" searchQuery={searchQuery}
                     external
-                    onSelect={() => s.setTab("live")}
-                    onStart={() => {}}
-                    onStop={() => {}}
-                    onLive={() => s.setTab("live")}
+                    onSelect={() => activateWorkspaceMultilogin(multiloginRow)}
+                    onStart={() => {
+                      activateWorkspaceMultilogin(multiloginRow);
+                      void runProfileAction(`We couldn't start “${multiloginRow.name}”.`, "MULTILOGIN_START_FAILED", () => s.setMultiloginRunning(multiloginRow, true));
+                    }}
+                    onStop={() => void runProfileAction(`We couldn't stop “${multiloginRow.name}”.`, "MULTILOGIN_STOP_FAILED", () => s.setMultiloginRunning(multiloginRow, false))}
+                    onLive={() => { activateWorkspaceMultilogin(multiloginRow); s.setTab("live"); }}
                     onMenu={() => {}}
                     onRemove={() => clearMultiloginSelection(s.activeWorkspaceId)}
                     removeTitle={`Remove ${multiloginRow.name} from this workspace`}
@@ -1542,7 +1604,7 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
                 <UserFacingError
                   message={profileActionError}
                   surface="profile_action"
-                  discordLabel={isProxyTrafficGateMessage(profileActionError) ? "Ask in Discord." : undefined}
+                  discordLabel={isProxyTrafficGateMessage(profileActionError) ? "Questions? Ask in Discord." : undefined}
                 />
                 <button type="button" onClick={() => setProfileActionError(null)}>Dismiss</button>
               </div>
@@ -1597,16 +1659,20 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
         {s.nextctlUpdateStatus && <span>· {s.nextctlUpdateStatus}</span>}
         {!s.nextctlSupportsSkill && !s.nextctlCompatibilityError && <span className="warn"> · no skill cmd</span>}
         <span className="spacer" />
-        <button
-          className={"agent-footer-status" + (ready ? " is-ready" : "")}
-          title="Agent settings"
-          aria-label="Open agent settings"
-          onClick={onOpenAgentSettings}
-        >
-          <span className="status-dot" />
-          <span>{agentName} · {ready ? "Connected" : s.agentLoggedIn() === false ? "Sign-in required" : "Not connected"}</span>
-          <Icon name="chevron.down" size={11} />
-        </button>
+        {/* The agent status and the accessory wrap together, so the accessory never lands on a line of its own. */}
+        <span className="agent-footer-group">
+          <button
+            className={"agent-footer-status" + (ready ? " is-ready" : "")}
+            title="Agent settings"
+            aria-label="Open agent settings"
+            onClick={onOpenAgentSettings}
+          >
+            <span className="status-dot" />
+            <span>{agentName} · {ready ? "Connected" : s.agentLoggedIn() === false ? "Sign-in required" : "Not connected"}</span>
+            <Icon name="chevron.down" size={11} />
+          </button>
+          {footerAccessory}
+        </span>
       </div>
 
       {createProfileOpen && createPortal((
@@ -1800,7 +1866,7 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
                     </div>
                     <div className="profile-multilogin-proxy-note">
                       <Icon name="network" size={13} />
-                      <span><strong>Proxy is managed by Multilogin</strong><small>New profiles get a built-in proxy in the country below. For your own proxy, set it up in Multilogin and pick that existing profile.</small></span>
+                      <span><strong>Proxy for new profiles</strong><small>Use Multilogin's built-in proxy in a country, or one of your personal proxies. Existing profiles keep the proxy set in Multilogin.</small></span>
                       <button type="button" className="link" onClick={() => void invoke("open_external", { url: "https://app.multilogin.com" })}>Open Multilogin</button>
                     </div>
                     <div className="connector-profile-tabs profile-multilogin-modes" role="tablist" aria-label="Multilogin profile source">
@@ -1833,16 +1899,52 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
                             <span>Cloud phone</span>
                           </button>
                         </div>
-                        <div className="modal-field profile-multilogin-country">
-                          <span>Proxy country</span>
-                          <CountrySelect
-                            countries={proxyCountries}
-                            value={profileCountry}
-                            disabled={profileSaving}
-                            ariaLabel="Proxy country"
-                            onChange={setProfileCountry}
-                          />
-                        </div>
+                        {multiloginKind === "browser" && (
+                          <div className="connector-profile-tabs profile-multilogin-proxy-tabs" role="tablist" aria-label="Multilogin profile proxy">
+                            <button type="button" role="tab" aria-selected={profileConnection !== "personal"} className={profileConnection !== "personal" ? "active" : ""} onClick={() => { setProfileConnection("managed"); setProfileError(null); }}>
+                              <span>Multilogin proxy</span>
+                            </button>
+                            <button type="button" role="tab" aria-selected={profileConnection === "personal"} className={profileConnection === "personal" ? "active" : ""} onClick={() => {
+                              setProfileConnection("personal");
+                              setProfilePersonalProxyId((current) => current || s.personalProxies[0]?.id || "");
+                              setProfileError(null);
+                              void s.loadPersonalProxies().catch(() => undefined);
+                            }}>
+                              <span>Personal proxy</span>
+                            </button>
+                          </div>
+                        )}
+                        {multiloginKind === "browser" && profileConnection === "personal" ? (
+                          <div className="modal-field profile-personal-proxy-field">
+                            <span className="profile-field-heading">
+                              <span>Personal proxy</span>
+                              <button type="button" className="link" onClick={() => { resetManualProxyForm(); setManualProxyEditing(s.personalProxies.length === 0); setManualProxyDeleting(null); setManualProxyOpen(true); }}>
+                                {s.personalProxies.length ? "Manage" : "Create proxy"}
+                              </button>
+                            </span>
+                            {s.personalProxies.length ? (
+                              <PersonalProxySelect
+                                value={profilePersonalProxyId}
+                                proxies={s.personalProxies}
+                                disabled={profileSaving}
+                                ariaLabel="Personal proxy for the Multilogin profile"
+                                onChange={setProfilePersonalProxyId}
+                                onAdd={() => { resetManualProxyForm(); setManualProxyDeleting(null); setManualProxyEditing(true); setManualProxyOpen(true); }}
+                              />
+                            ) : <small className="muted">No personal proxies yet. Create one to use it here.</small>}
+                          </div>
+                        ) : (
+                          <div className="modal-field profile-multilogin-country">
+                            <span>Proxy country</span>
+                            <CountrySelect
+                              countries={proxyCountries}
+                              value={profileCountry}
+                              disabled={profileSaving}
+                              ariaLabel="Proxy country"
+                              onChange={setProfileCountry}
+                            />
+                          </div>
+                        )}
                         {multiloginKind === "browser" ? (
                           <label className="modal-field profile-multilogin-os">
                             <span>Fingerprint OS</span>
@@ -2525,7 +2627,7 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
                             <Icon name="trash" size={13} />
                           </button>
                         </div>
-                        {test?.status === "fail" && <p className="personal-proxy-test-error" role="alert">{test.detail} <span>Check the proxy details, then press Test to retry.</span></p>}
+                        <PersonalProxyTestStatus test={test} />
                         </div>
                       );
                     })}
@@ -2540,15 +2642,18 @@ export function Sidebar({ onOpenAgentSettings, onHome }: SidebarProps) {
                 {manualProxyDeleting && (() => {
                   const proxy = s.personalProxies.find((item) => item.id === manualProxyDeleting);
                   if (!proxy) return null;
+                  const proxyUsers = personalProxyUsers(s.workspaces, proxy.id);
                   return (
                     <div className="personal-proxy-delete-confirm" role="alert">
-                      <span>Delete “{proxy.name}” from this device?</span>
+                      <span>{proxyUsers.length
+                        ? `“${proxy.name}” is used by ${proxyUsers.join(", ")}. Change their connection before deleting it.`
+                        : `Delete “${proxy.name}” from this device?`}</span>
                       <div className="row">
                         <button type="button" className="secondary" disabled={manualProxyDeletePending} onClick={() => setManualProxyDeleting(null)}>Cancel</button>
                         <button
                           type="button"
                           className="primary danger"
-                          disabled={manualProxyDeletePending}
+                          disabled={manualProxyDeletePending || proxyUsers.length > 0}
                           onClick={() => {
                             setManualProxyDeletePending(true);
                             void s.deletePersonalProxy(proxy.id)
@@ -2683,6 +2788,17 @@ function HighlightedName({ text, query }: { text: string; query?: string }) {
   );
 }
 
+function multiloginStatusLabel(status?: string): string {
+  switch (status) {
+    case "running": return "Running";
+    case "starting": return "Starting";
+    case "stopping": return "Stopping";
+    case "stopped": return "Stopped";
+    case "error": return "Error";
+    default: return "Multilogin";
+  }
+}
+
 function ProfileRow({
   name,
   displayName,
@@ -2774,17 +2890,18 @@ function ProfileRow({
         onClick={onSelect}
         style={{ background: "none", border: "none", padding: 0, color: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 7, flex: "1 1 auto", minWidth: 0, cursor: "pointer" }}
       >
-      <span className={"dot " + (external ? "gray" : running ? "green" : busy ? "orange" : "gray")} title={external ? toolsetLabel : status} />
+      <span className={"dot " + (running ? "green" : busy ? "orange" : "gray")} title={external ? `${toolsetLabel} · ${status}` : status} />
       <span className="profile-main">
         <span className="profile-title-line">
           <span className="profile-name" title={displayName || name}><HighlightedName text={displayName || name} query={searchQuery} /></span>
         </span>
-        <span className="profile-meta">
-          {metaOverride ?? (occupiedBy ? `In use · ${occupiedBy}` : status === "starting" ? "Starting and verifying" : ip ? `${status} · ${ip}` : status)}
+        {/* Badges share the status line so a narrow sidebar keeps the name readable. */}
+        <span className="profile-meta-line">
+        {occupiedBy && <span className="profile-in-use-badge" title={`In use by “${occupiedBy}”`}>In use</span>}
+        <span className="profile-meta" title={occupiedBy ? `In use by “${occupiedBy}”` : undefined}>
+          {profileRowStatusText({ status, ip, occupiedBy, metaOverride })}
         </span>
-      </span>
       <span className="profile-badges">
-        {occupiedBy && <span className="profile-in-use-badge">In use</span>}
         {country && (
           <span className="badge profile-country-badge" title={countryLabel(country, city)}>
             {countryFlag(country)} {country.toUpperCase()}
@@ -2806,10 +2923,26 @@ function ProfileRow({
           </span>
         )}
       </span>
+        </span>
+      </span>
       </button>
       <div className="profile-actions">
         {external ? (
           <>
+            <button
+              className="plain-icon-btn"
+              title={running ? "Stop" : "Start"}
+              aria-label={`${running ? "Stop" : "Start"} ${name}`}
+              data-tooltip={running ? "Stop" : "Start"}
+              disabled={busy}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (running) onStop();
+                else onStart();
+              }}
+            >
+              <Icon name={running ? "stop.fill" : "play.fill"} size={16} />
+            </button>
             <button
               className="plain-icon-btn"
               title="Live view"

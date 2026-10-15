@@ -18,8 +18,8 @@ import { ProfileCreateRequestModal } from "./components/ProfileCreateRequestModa
 import { BrandLogo } from "./components/BrandLogo";
 import { Icon, Spinner } from "./components/Icon";
 import { AgentPicker } from "./components/AgentPicker";
-import { brandName, dashboardUrl, discordUrl, latestReleaseUrl, repoUrl } from "./constants";
-import { trafficAllowanceBytes, trafficAllowanceFraction } from "./lib/trafficGate";
+import { brandName, discordUrl, latestReleaseUrl, repoUrl } from "./constants";
+import { trafficAllowanceBytes, trafficAllowanceFraction, trafficGateState, trafficGateStateLabel, trafficGateStateTone } from "./lib/trafficGate";
 import { getPreviewMode, getPreviewNodeMavenState, getPreviewTab } from "./preview";
 import { humanBytes, type AppTab, type Conversation } from "./types";
 import { resolveTheme, type Theme } from "./theme";
@@ -45,7 +45,9 @@ import { AgentInstallLink } from "./components/AgentInstallLink";
 import { ConnectorsView } from "./components/ConnectorsView";
 import { AutomationStudio } from "./components/AutomationStudio";
 import { FeedbackModal } from "./components/FeedbackModal";
-import { markFeedbackSubmitted, shouldPromptForFeedback } from "./lib/feedbackPrompt";
+import { feedbackPromptBlocked, feedbackPromptConfig, markFeedbackSubmitted, shouldPromptForFeedback } from "./lib/feedbackPrompt";
+import { multiloginSelectionForWorkspace } from "./lib/multiloginSelection";
+import { countWorkspaceProfiles } from "./lib/workspaceProfiles";
 
 const TABS: { id: AppTab; label: string; icon?: string }[] = [
   { id: "chat", label: "Project", icon: "folder" },
@@ -134,10 +136,10 @@ function UIScaleSlider({ value, onChange }: { value: number; onChange: (next: nu
   );
 }
 
-function UIScaleControl({ value, onChange, onDismiss }: { value: number; onChange: (next: number) => void; onDismiss: () => void }) {
+function UIScaleControl({ value, onChange, onDismiss, inline = false }: { value: number; onChange: (next: number) => void; onDismiss: () => void; inline?: boolean }) {
   return (
-    <div className="ui-scale-control" title="Interface size">
-      <Icon name="magnifyingglass" size={13} />
+    <div className={"ui-scale-control" + (inline ? " ui-scale-control-inline" : "")} title="Interface size">
+      <Icon name="magnifyingglass" size={inline ? 11 : 13} />
       <UIScaleSlider value={value} onChange={onChange} />
       <button
         className="plain-icon-btn plain-icon-btn-compact ui-scale-dismiss"
@@ -574,11 +576,15 @@ function SettingsModal({
   const authorizeAgent = useStore((s) => s.authorizeAgent);
   const loginAgent = useStore((s) => s.loginAgent);
   const logoutAgent = useStore((s) => s.logoutAgent);
-  const profiles = useStore((s) => {
-    const defaultKnown = !!s.defaultSession?.session?.name || (s.defaultSession?.status ?? "unknown") !== "unknown";
-    const hasListedDefault = s.profiles.some((profile) => profile.name === "default");
-    return s.profiles.length + (defaultKnown && !hasListedDefault ? 1 : 0);
-  });
+  // The active workspace's profiles, as the sidebar counts them; the local
+  // inventory also holds the profiles of every other workspace.
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const hasMultiloginProfile = !!multiloginSelectionForWorkspace(activeWorkspaceId);
+  const profiles = useStore((s) => countWorkspaceProfiles(
+    s.workspaces.find((workspace) => workspace.id === s.activeWorkspaceId),
+    s.profiles,
+    hasMultiloginProfile,
+  ));
   const proxy = useStore((s) => s.proxy);
   const agentSpec = agentById(agentId);
   const agentName = agentSpec.name;
@@ -588,6 +594,8 @@ function SettingsModal({
   const proxyUsed = proxy ? humanBytes(proxy.used_bytes) : "Locked";
   const proxyLimit = proxyAllowance != null ? humanBytes(proxyAllowance) : proxy ? "unlimited" : "Sign in";
   const proxyPercent = proxy?.limited ? Math.round(trafficAllowanceFraction(proxy) * 100) : null;
+  // A paused account has nothing left of the 1 GiB it is shown; say so instead of the share used.
+  const proxyPaused = trafficGateState(proxy) === "blocked";
   const handleAgentLogout = async () => {
     if (agentLogoutPending) return;
     setAgentLogoutPending(true);
@@ -683,9 +691,13 @@ function SettingsModal({
           </div>
           <div className="settings-row">
             <span className="muted small">Proxy</span>
-            <span className={proxy ? "ok small" : "muted small"}>
-              {proxy ? proxy.state : "locked"}
-            </span>
+            {proxy ? (
+              <span className={`status-pill proxy-state ${trafficGateStateTone(proxy)}`}>
+                {trafficGateStateLabel(proxy)}
+              </span>
+            ) : (
+              <span className="muted small">locked</span>
+            )}
           </div>
         </div>
 
@@ -803,7 +815,11 @@ function SettingsModal({
                 {proxy ? `${proxyUsed} / ${proxyLimit}` : "Traffic, allocation, and usage history"}
               </span>
             </span>
-            {proxyPercent != null && <span className="status-pill">{proxyPercent}%</span>}
+            {proxyPercent != null && (
+              <span className={`status-pill${proxyPaused ? " proxy-state paused" : ""}`}>
+                {proxyPaused ? trafficGateStateLabel(proxy) : `${proxyPercent}%`}
+              </span>
+            )}
             <Icon name="chevron.right" size={14} className="muted" />
           </button>
         </div>
@@ -929,7 +945,10 @@ export function App() {
   const [browserInstallHiddenKey, setBrowserInstallHiddenKey] = useState<string>();
   const [agentGateDismissed, setAgentGateDismissed] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackPromptPending, setFeedbackPromptPending] = useState(false);
   const feedbackPromptEvaluated = useRef(false);
+  const trafficGatePromptOpen = useStore((s) => s.trafficGatePromptOpen && trafficGateState(s.proxy) === "blocked");
+  const githubStarPromptOpen = useStore((s) => s.githubStarPromptOpen && shouldAskForGitHubStar(s.githubStar));
   const githubStarPromptEvaluated = useRef(false);
   const githubStar = useStore((s) => s.githubStar);
   const setGitHubStarPromptOpen = useStore((s) => s.setGitHubStarPromptOpen);
@@ -1022,11 +1041,34 @@ export function App() {
     // feedback depend on which agent the user has selected.
     if (feedbackPromptEvaluated.current || !feedbackAvailable || showOnboarding || workspaceSetupRequired) return;
     feedbackPromptEvaluated.current = true;
-    if (shouldPromptForFeedback(localStorage)) {
+    if (shouldPromptForFeedback(localStorage)) setFeedbackPromptPending(true);
+  }, [feedbackAvailable, showOnboarding, workspaceSetupRequired]);
+
+  const feedbackPromptWaiting = feedbackPromptBlocked({
+    onboarding: showOnboarding || workspaceSetupRequired,
+    agentGate: agentGateOpen,
+    trafficGate: trafficGatePromptOpen,
+    githubStar: githubStarPromptOpen,
+    appUpdate: updateAvailable(appUpdate) && appUpdate.version !== updatePromptDismissedVersion,
+    runtimeUpdate: !!runtimeUpdatePrompt,
+    settings: settingsOpen,
+  });
+  useEffect(() => {
+    // The due ask waits until the start has settled and no other dialog is
+    // open, so it never lands on top of the traffic gate or a setup step.
+    if (!feedbackPromptPending || !feedbackAvailable || feedbackPromptWaiting) return;
+    const timer = window.setTimeout(() => {
+      setFeedbackPromptPending(false);
       setFeedbackOpen(true);
       trackEvent("feedback_prompt_shown", { trigger: "fifth_open" });
-    }
-  }, [feedbackAvailable, showOnboarding, workspaceSetupRequired]);
+    }, feedbackPromptConfig.delayMs);
+    return () => window.clearTimeout(timer);
+  }, [feedbackPromptPending, feedbackAvailable, feedbackPromptWaiting]);
+
+  useEffect(() => {
+    // Opening feedback by hand answers this launch's ask.
+    if (feedbackOpen) setFeedbackPromptPending(false);
+  }, [feedbackOpen]);
 
   useEffect(() => {
     // Once per launch, once the app is usable: a GitHub sign-up that has not
@@ -1426,7 +1468,7 @@ export function App() {
           remaining_bytes: nodeMavenState === "exhausted" ? 0 : 760_000_000,
           percent_used: nodeMavenState === "exhausted" ? 100 : 24,
           state: nodeMavenState === "exhausted" ? "exhausted" : "ok",
-          dashboard_url: dashboardUrl,
+          dashboard_url: "https://dashboard.nodemaven.com/dashboard",
           provider: "nodemaven",
           provider_account_email: "customer@example.com",
           provider_access_method: "password_reset",
@@ -1627,7 +1669,13 @@ export function App() {
         className={"sidebar thin-material" + (sidebarCollapsed ? " sidebar-collapsed" : "")}
         style={{ width: sidebarCollapsed ? 68 : sidebarWidth }}
       >
-        <Sidebar onOpenAgentSettings={() => openSettings("agent")} onHome={() => setTab("chat")} />
+        <Sidebar
+          onOpenAgentSettings={() => openSettings("agent")}
+          onHome={() => setTab("chat")}
+          footerAccessory={!uiScaleFloatingHidden && !sidebarCollapsed
+            ? <UIScaleControl inline value={uiScale} onChange={setUiScale} onDismiss={dismissUiScaleFloating} />
+            : undefined}
+        />
       </aside>
       {!sidebarCollapsed && <div id="sidebar-resize" className="resize-handle" title="Resize sidebar" aria-label="Resize sidebar" />}
       <main className="content">
@@ -1753,9 +1801,8 @@ export function App() {
       )}
       {unexpectedError && <GlobalErrorNotice error={unexpectedError} onClose={() => setUnexpectedError(undefined)} />}
       {feedbackModal}
-      {!uiScaleFloatingHidden && (
-        <UIScaleControl value={uiScale} onChange={setUiScale} onDismiss={dismissUiScaleFloating} />
-      )}
+      {/* The control lives in the sidebar footer. A floating copy over the collapsed rail covered the agent
+          button (and the composer when moved right), so a collapsed sidebar shows none; Settings keeps it. */}
     </div>
   );
 }

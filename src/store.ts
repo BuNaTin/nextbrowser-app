@@ -4319,6 +4319,15 @@ export const useStore = create<State>((set, get) => {
         "--format", "json",
       ]);
     }
+    // Replace the old connection's identity before reloading. A status poll
+    // copies every stopped profile's identity it reads, so one running beside
+    // this reload would otherwise write the old country back after the change
+    // and the row would keep it until the next start.
+    set((state) => ({
+      profileIdentities: connection === "managed"
+        ? { ...state.profileIdentities, [name]: { country: options?.country?.toUpperCase() } }
+        : Object.fromEntries(Object.entries(state.profileIdentities).filter(([profileName]) => profileName !== name)),
+    }));
     await get().loadProfiles();
     await get().loadProxy().catch(() => undefined);
     const workspaces = get().workspaces.map((workspace) => {
@@ -4329,12 +4338,7 @@ export const useStore = create<State>((set, get) => {
       return { ...workspace, profileProxyIds, updatedAt: editedAt(workspace.updatedAt) };
     });
     await saveWorkspaces(workspaces);
-    set((state) => ({
-      workspaces,
-      profileIdentities: connection === "managed"
-        ? { ...state.profileIdentities, [name]: { country: options?.country?.toUpperCase() } }
-        : Object.fromEntries(Object.entries(state.profileIdentities).filter(([profileName]) => profileName !== name)),
-    }));
+    set({ workspaces });
     await get().syncProjects().catch(() => undefined);
     trackEvent("profile_connection_changed", { connection, runtime });
   },

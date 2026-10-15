@@ -166,3 +166,38 @@ it("does not restore a profile association removed during sync", async () => {
   await vi.waitFor(() => expect(useStore.getState().projectsSyncing).toBe(false));
   expect(useStore.getState().workspaces[0].profileNames).toEqual(["two"]);
 });
+
+it("does not let a status poll bring back the country of a profile's old connection", async () => {
+  const { useStore } = await import("./store");
+  useStore.setState({
+    profiles: [{ name: "one", country: "PL" }, { name: "two", country: "US" }],
+    statuses: { one: "stopped", two: "stopped" },
+    profileIdentities: { one: { country: "PL", unverified: true } },
+  });
+  const changeStatus = deferred<ReturnType<typeof result>>();
+  const pollStatus = deferred<ReturnType<typeof result>>();
+  let oneStatusCalls = 0;
+  bridge.invoke.mockImplementation((command, { args } = {}) => {
+    if (command === "manual_proxy_profile_update") return Promise.resolve(result({}));
+    if (command !== "nextctl_run") return Promise.resolve(null);
+    if (args[0] === "profiles") return Promise.resolve(result({ profiles: [
+      { name: "one", proxy_mode: "manual", manual_proxy: { scheme: "http", host: "fr.example", port: 8080 } },
+      { name: "two", country: "US" },
+    ] }));
+    if (args[0] === "status" && args[2] === "one") return ++oneStatusCalls === 1 ? changeStatus.promise : Promise.resolve(result({ status: "stopped" }));
+    if (args[0] === "status") return pollStatus.promise;
+    return Promise.resolve(null);
+  });
+  const change = useStore.getState().updateProfileConnection("one", "personal", { proxyId: "fr-proxy" });
+  await vi.waitFor(() => expect(oneStatusCalls).toBe(1));
+  // The 15-second status poll starts while the change reloads the inventory,
+  // reads "one" and is still busy with "two" when the change finishes.
+  const poll = useStore.getState().loadProfiles();
+  await vi.waitFor(() => expect(bridge.invoke.mock.calls.some(([, arg]) => arg?.args?.[0] === "status" && arg.args[2] === "two")).toBe(true));
+  changeStatus.resolve(result({ status: "stopped" }));
+  await change;
+  pollStatus.resolve(result({ status: "stopped" }));
+  await poll;
+  expect(useStore.getState().profiles.find((profile) => profile.name === "one")?.country).toBeUndefined();
+  expect(useStore.getState().profileIdentities.one).toBeUndefined();
+});

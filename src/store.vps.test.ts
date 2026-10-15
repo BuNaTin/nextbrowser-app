@@ -1058,7 +1058,7 @@ describe("browser profile creation", () => {
       }],
     });
     bridge.invoke.mockResolvedValue({
-      stdout: JSON.stringify({ ok: true, data: { profiles: [] } }),
+      stdout: JSON.stringify({ ok: true, data: { profiles: [{ name: "existing", country: "US" }] } }),
       stderr: "",
       code: 0,
     });

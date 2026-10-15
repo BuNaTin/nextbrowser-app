@@ -1,4 +1,4 @@
-import type { BrowserWorkflowSkill, ChatMessage, Conversation } from "../types";
+import type { BrowserWorkflowSkill, ChatMessage, Conversation, ToolEvent } from "../types";
 import { invoke } from "../electronBridge";
 
 /**
@@ -52,9 +52,33 @@ export type AutomationExecutionEvent = {
   state: "pending" | "success" | "failed" | "info";
 };
 
+const BROWSER_ACTION_TOOLS = [
+  "open", "open_url", "navigate", "navigate_extract", "wait", "click", "input", "press", "select", "scroll",
+  "dismiss", "upload", "extract", "paginate_extract", "tabs_extract", "form_fill", "multi_action",
+  "site_recipe_run", "act", "evaluate", "save_artifact",
+];
+
+/**
+ * The browser tool a reply's tool event called ("open", "save_artifact"), or
+ * undefined for anything else. Recorded and repaired runs name the event
+ * "clawbrowser.open"; a live agent reply records each MCP call as a "step"
+ * whose detail reads "clawbrowser: navigate https://…" (electron/agent-steps.cjs).
+ */
+export function browserActionTool(event: ToolEvent): string | undefined {
+  const named = event.name.match(/^(?:clawbrowser|nextbrowser)\.(\w+)$/);
+  if (named) return BROWSER_ACTION_TOOLS.includes(named[1]) ? named[1] : undefined;
+  if (event.name !== "step" || !event.detail) return undefined;
+  const call = event.detail.match(/^[\w-]*(?:clawbrowser|nextbrowser)[\w-]*: (.+)$/);
+  if (!call) return undefined;
+  return BROWSER_ACTION_TOOLS.find((tool) => {
+    const spoken = tool.replace(/_/g, " ");
+    return call[1] === spoken || call[1].startsWith(`${spoken} `);
+  });
+}
+
 export function automationAgentBrowserActionCount(execution: AutomationExecution, conversations: Conversation[]) {
   const answer = automationAgentAnswer(execution, conversations);
-  return (answer?.toolEvents || []).filter((event) => /^(?:clawbrowser|nextbrowser)\.(?:open|wait|click|input|press|select|scroll|dismiss|upload|extract|paginate_extract|tabs_extract|form_fill|multi_action|site_recipe_run|act|evaluate|save_artifact)$/.test(event.name)).length;
+  return (answer?.toolEvents || []).filter((event) => browserActionTool(event)).length;
 }
 
 /** A safe, human-readable merge of runner and agent progress. Tool arguments
@@ -63,15 +87,16 @@ export function automationExecutionTimeline(execution: AutomationExecution, conv
   const stored = execution.events ?? [];
   if (execution.engine !== "agent") return stored;
   const answer = automationAgentAnswer(execution, conversations);
-  const browserEvents = (answer?.toolEvents ?? [])
-    .filter((event) => /^(?:clawbrowser|nextbrowser)\.(?:open|wait|click|input|press|select|scroll|dismiss|upload|extract|paginate_extract|tabs_extract|form_fill|multi_action|site_recipe_run|act|evaluate|save_artifact)$/.test(event.name))
-    .map((event): AutomationExecutionEvent => ({
+  const browserEvents = (answer?.toolEvents ?? []).flatMap((event): AutomationExecutionEvent[] => {
+    const tool = browserActionTool(event);
+    return tool ? [{
       id: `tool-${event.id}`,
       at: event.createdAt,
-      kind: event.name.endsWith("save_artifact") ? "artifact" : "browser",
-      title: event.name.replace(/^(?:clawbrowser|nextbrowser)\./, "").replace(/_/g, " "),
+      kind: tool === "save_artifact" ? "artifact" : "browser",
+      title: tool.replace(/_/g, " "),
       state: "info",
-    }));
+    }] : [];
+  });
   const ids = new Set(stored.map((event) => event.id));
   return [...stored, ...browserEvents.filter((event) => !ids.has(event.id))].sort((a, b) => a.at - b.at);
 }
@@ -234,8 +259,8 @@ export function automationExecutionView(execution: AutomationExecution, conversa
   }
   const expectedTools = execution.actionTools?.length ? new Set(execution.actionTools) : PROGRESS_TOOLS;
   const actions = (answer?.toolEvents || []).filter((event) => {
-    const match = event.name.match(/^(?:clawbrowser|nextbrowser)\.(.+)$/);
-    return !!match && PROGRESS_TOOLS.has(match[1]) && expectedTools.has(match[1]);
+    const tool = browserActionTool(event);
+    return !!tool && PROGRESS_TOOLS.has(tool) && expectedTools.has(tool);
   }).length;
   const elapsedProgress = Math.min(65, 20 + Math.floor(Math.max(0, now - execution.startedAt) / 10_000) * 5);
   const progress = answer ? Math.min(90, Math.max(elapsedProgress, 20 + Math.round(actions / Math.max(1, execution.expectedActions) * 70))) : execution.phase === "preparing" ? 8 : 15;

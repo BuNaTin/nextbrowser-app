@@ -1025,7 +1025,7 @@ export function AutomationStudio() {
         const { args, stdinText } = agent.id === "codex"
           ? { args: ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"], stdinText: prompt }
           : agent.id === "claude"
-            ? { args: ["-p", "--permission-mode", "dontAsk", "--tools", "", prompt], stdinText: null }
+            ? { args: ["-p", "--permission-mode", "dontAsk", "--tools", ""], stdinText: prompt }
             : { args: invocation.args, stdinText: invocation.stdin ?? null };
         const result = await invoke<{ code: number; stdout: string; stderr: string }>("workflow_author_run", {
           binary: agent.binary, envVar: agent.envVar, args, stdinText, workingDir: s.workingDir || null,

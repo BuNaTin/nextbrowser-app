@@ -147,12 +147,17 @@ export function agentInvocation(
 ): { args: string[]; stdin?: string; stepFormat?: AgentStepFormat } {
   switch (spec.runStyle) {
     case "claudePrint":
+      // The prompt goes on stdin, as for Codex. A chat prompt carries recent
+      // history and an automation repair its recipe, and on Windows a command
+      // line past 32,767 characters fails to spawn (ENAMETOOLONG): the chat
+      // only said "We couldn't start the agent".
       return options.steps
         ? {
-            args: ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose", prompt],
+            args: ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"],
+            stdin: prompt,
             stepFormat: "claude-stream-json",
           }
-        : { args: ["-p", "--dangerously-skip-permissions", prompt] };
+        : { args: ["-p", "--dangerously-skip-permissions"], stdin: prompt };
     case "codexExec":
       return {
         args: ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-"],

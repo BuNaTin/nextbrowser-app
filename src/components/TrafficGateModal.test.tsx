@@ -33,7 +33,7 @@ beforeEach(() => {
 });
 
 describe("free traffic gate prompt", () => {
-  it("names the pause and offers Discord once a gated account runs out", () => {
+  it("asks a gated account to star the repo once it runs out, Discord for questions", () => {
     state.trafficGatePromptOpen = true;
     state.proxy = proxy({
       used_bytes: 141 * mebibyte,
@@ -46,11 +46,11 @@ describe("free traffic gate prompt", () => {
 
     expect(html).toContain('role="alertdialog"');
     expect(html).toContain('aria-modal="true"');
-    expect(html).toContain("Your free proxy traffic is paused");
-    expect(html).toContain("Ask in Discord");
+    expect(html).toContain("Get 1 GB of free proxy traffic");
+    expect(html).toContain("nextbrowser-oss/nextbrowser-app");
+    expect(html).toContain("Open GitHub");
+    expect(html).toContain("Questions? Ask in Discord");
     expect(html).toContain("141 MiB used");
-    // The allowance the account was shown, not the gate limit it really had.
-    expect(html).toContain("1 GiB");
   });
 
   it("stays down for a gated account that still has traffic", () => {

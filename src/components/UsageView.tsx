@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { nextctlJson } from "../nextctl";
 import { useStore } from "../store";
 import { invoke } from "../electronBridge";
-import { discordUrl } from "../constants";
+import { discordUrl, repoUrl } from "../constants";
 import { trackEvent } from "../lib/analytics";
 import {
   domainPaginationItems,
@@ -20,7 +20,6 @@ import {
   type ProxyTrafficHistoryPreset,
 } from "../lib/proxyTraffic";
 import {
-  freeTrafficAllowanceBytes,
   trafficAllowanceBytes,
   trafficAllowanceFraction,
   trafficAllowanceRemainingBytes,
@@ -210,6 +209,14 @@ export function UsageView() {
       setHistoryReload((value) => value + 1);
     }
   };
+  const openTrafficGateGitHub = () => {
+    trackEvent("proxy_traffic_gate_github_opened", {
+      surface: "usage_card",
+      proxy_state: s.proxy?.state ?? "unknown",
+      used_bytes_bucket: s.proxy ? Math.floor(s.proxy.used_bytes / (10 * 1024 * 1024)) * 10 : "unknown",
+    });
+    window.open(repoUrl, "_blank", "noopener,noreferrer");
+  };
   const openTrafficGateDiscord = () => {
     trackEvent("proxy_traffic_gate_discord_opened", {
       proxy_state: s.proxy?.state ?? "unknown",
@@ -357,21 +364,25 @@ export function UsageView() {
               <div className="proxy-traffic-gate" role="status">
                 <div className="proxy-traffic-gate-heading">
                   <Icon name="lock.fill" size={16} />
-                  <strong>Your free {humanBytes(freeTrafficAllowanceBytes)} is yours</strong>
+                  <strong>Get 1 GB of free proxy traffic</strong>
                 </div>
                 <p className="muted small">
-                  New accounts pause after the first few dozen megabytes so we can meet the
-                  people using Nextbrowser. Say hi in Discord and we unlock the rest of your
-                  allowance by hand — feedback, repo stars, and pull requests earn more.
+                  Connect GitHub and star nextbrowser-oss/nextbrowser-app. Your 1 GB unlocks
+                  once the star is checked. If you remove the star later, the bonus pauses again.
                 </p>
-                <button
-                  className="btn-bordered-prominent"
-                  type="button"
-                  onClick={openTrafficGateDiscord}
-                >
-                  <Icon name="bubble.left.and.bubble.right.fill" size={13} />
-                  Ask in Discord
-                </button>
+                <div className="proxy-traffic-gate-actions">
+                  <button
+                    className="btn-bordered-prominent"
+                    type="button"
+                    onClick={openTrafficGateGitHub}
+                  >
+                    <Icon name="star.fill" size={13} />
+                    Open GitHub
+                  </button>
+                  <button className="link small" type="button" onClick={openTrafficGateDiscord}>
+                    Questions? Ask in Discord
+                  </button>
+                </div>
               </div>
             )}
             {s.proxy.provider === "nodemaven" && (gateState === "open" || dashboardReady) && (

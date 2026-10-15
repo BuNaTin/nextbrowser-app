@@ -82,7 +82,7 @@ it("does not dispatch a cancelled request when startup later succeeds", async ()
   expect(useStore.getState().conversations[0].messages.find((m) => m.id === item.replyId)?.status).toBe("cancelled");
 });
 
-it("reopens a dismissed traffic gate after a coalesced startup is refused", async () => {
+it("raises the traffic gate when a coalesced startup is refused", async () => {
   const { useStore } = await import("./store");
   let reject!: (error: Error) => void;
   mocks.prepareSession.mockImplementation(() => new Promise((_done, fail) => { reject = fail; }));

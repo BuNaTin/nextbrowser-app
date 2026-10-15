@@ -101,3 +101,16 @@ describe("NodeMaven purchase handoff", () => {
     expect(html).not.toContain("Buy more traffic in NodeMaven");
   });
 });
+
+describe("current allocation", () => {
+  it("does not offer the rest of the free 1 GB while the traffic is paused", () => {
+    state.proxy = {
+      provider: "nodemaven", limited: true, used_bytes: 134 * 1024 * 1024,
+      limit_bytes: 134 * 1024 * 1024, remaining_bytes: 0, state: "exhausted",
+    } as ProxyTraffic;
+    const html = renderToStaticMarkup(<UsageView />);
+    expect(html).toContain("paused");
+    expect(html).toContain("0 B remaining");
+    expect(html).not.toContain("890 MiB remaining");
+  });
+});

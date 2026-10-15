@@ -90,9 +90,25 @@ describe("displayed allowance", () => {
     });
 
     expect(trafficAllowanceBytes(gated)).toBe(freeTrafficAllowanceBytes);
-    expect(trafficAllowanceRemainingBytes(gated)).toBe(freeTrafficAllowanceBytes - 37 * mebibyte);
     expect(Math.round(trafficAllowanceFraction(gated) * 100)).toBe(4);
     expect(trafficGateStateLabel(gated)).toBe("paused");
+  });
+
+  it("leaves nothing remaining while the gate is closed", () => {
+    const paused = proxy({
+      used_bytes: 134 * mebibyte,
+      limit_bytes: 134 * mebibyte,
+      remaining_bytes: 0,
+      state: "exhausted",
+    });
+    expect(trafficAllowanceRemainingBytes(paused)).toBe(0);
+
+    const inside = proxy({
+      used_bytes: 60 * mebibyte,
+      limit_bytes: 141 * mebibyte,
+      remaining_bytes: 81 * mebibyte,
+    });
+    expect(trafficAllowanceRemainingBytes(inside)).toBe(freeTrafficAllowanceBytes - 60 * mebibyte);
   });
 
   it("keeps the provider allocation for accounts outside the gate", () => {

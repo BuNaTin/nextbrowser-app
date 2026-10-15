@@ -10,6 +10,13 @@ import {
   type MultiloginProfileSelection,
 } from "../lib/multiloginSelection";
 import type { LiveStreamTarget } from "../lib/liveStreamTarget";
+import {
+  clawbrowserTargetKey,
+  createLiveStartTurns,
+  liveSwitchStartsStream,
+  liveTargetStreamsWithoutLaunch,
+  multiloginTargetKey,
+} from "../lib/liveProfileSwitch";
 import { Icon, Spinner } from "./Icon";
 import { UserFacingError } from "./UserFacingError";
 
@@ -46,14 +53,6 @@ function mergeTabs(current: RemoteLiveTab[], incoming: RemoteLiveTab[]) {
   return [...next.values()];
 }
 
-function clawbrowserTargetKey(profile?: string) {
-  return `clawbrowser:${profile || "__default"}`;
-}
-
-function multiloginTargetKey(selection: MultiloginProfileSelection) {
-  return `multilogin:${selection.kind}:${selection.id}`;
-}
-
 // Hover moves are sent at most this often while no button is pressed.
 const LIVE_HOVER_INTERVAL_MS = 50;
 
@@ -86,6 +85,7 @@ export function LiveView({ active }: { active: boolean }) {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const keyboardSinkRef = useRef<HTMLTextAreaElement | null>(null);
   const streamGeneration = useRef(0);
+  const startTurnsRef = useRef(createLiveStartTurns());
   const inactiveTimerRef = useRef<number | null>(null);
   const inputWarningTimerRef = useRef<number | null>(null);
   const pointerDragRef = useRef<{ pointerId: number; button: string; buttons: number; x: number; y: number; clickCount: number } | null>(null);
@@ -226,15 +226,17 @@ export function LiveView({ active }: { active: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.statuses, sessionKey, streamInfo]);
 
-  const start = async (requestedKey = sessionKey) => {
-    if (state === "connecting") return;
+  const start = async (requestedKey = sessionKey, replacing = false) => {
+    if (state === "connecting" && !replacing) return;
     const generation = ++streamGeneration.current;
     const workspaceId = activeWorkspaceID;
+    const turn = startTurnsRef.current();
     setError("");
     setRemoteTabs([]);
     setPendingRemoteTab("");
     setState("connecting");
     try {
+      await turn.ready;
       await remoteCloseRef.current.catch(() => undefined);
       // A transient close failure is retried when the user tries Live again.
       // Never spend another backend slot while an older one may remain open.
@@ -248,6 +250,8 @@ export function LiveView({ active }: { active: boolean }) {
         return;
       }
       activeRemoteSessionRef.current = info;
+      // stop() releases the session from here on; the viewer may still connect.
+      turn.done();
       setStreamInfo(info);
       await connectRemoteViewer(info);
     } catch (error) {
@@ -258,11 +262,23 @@ export function LiveView({ active }: { active: boolean }) {
       activeRemoteSessionRef.current = null;
       setState("error");
       setError(actionFailureMessage("We couldn't start Live View.", "LIVE_VIEW_START_FAILED", error));
+    } finally {
+      turn.done();
     }
+  };
+
+  const switchProfile = (key: string) => {
+    const streaming = !!streamInfo || state === "connecting" || state === "live";
+    stop();
+    setSessionKey(key);
+    // stop() made any start in flight stale, so this one replaces it.
+    if (liveSwitchStartsStream(streaming, key, s.statuses)) void start(key, true);
   };
 
   const launchAndStream = async () => {
     if (state === "connecting") return;
+    // A profile switch or Stop while the profile launches takes precedence.
+    const generation = streamGeneration.current;
     setError("");
     setState("connecting");
     try {
@@ -276,11 +292,13 @@ export function LiveView({ active }: { active: boolean }) {
         if (profile && s.statuses[profile] !== "running") await s.startProfile(profile);
         if (!profile) throw new Error("Select a profile in this workspace first.");
         await s.refreshSessions();
+        if (generation !== streamGeneration.current) return;
         await start(launchTarget);
       } else {
         throw new Error("Select a profile in this workspace first.");
       }
     } catch (error) {
+      if (generation !== streamGeneration.current) return;
       setState("error");
       setError(actionFailureMessage("We couldn't launch the remote session.", "REMOTE_SESSION_LAUNCH_FAILED", error));
     }
@@ -337,10 +355,7 @@ export function LiveView({ active }: { active: boolean }) {
       !remoteClientRef.current &&
       state !== "connecting" &&
       (!streamInfo || targetChanged) &&
-      current &&
-      (current.startsWith("multilogin:")
-        || current === clawbrowserTargetKey()
-        || s.statuses[current.replace(/^clawbrowser:/, "")] === "running")
+      liveTargetStreamsWithoutLaunch(current, s.statuses)
     ) {
       void start(current);
     }
@@ -531,10 +546,7 @@ export function LiveView({ active }: { active: boolean }) {
           className="live-session-select"
           value={sessionKey}
           title="Choose profile to stream"
-          onChange={(e) => {
-            stop();
-            setSessionKey(e.target.value);
-          }}
+          onChange={(e) => switchProfile(e.target.value)}
         >
           <option value="">Select profile</option>
           {profileOptions.map((p) => (

@@ -184,6 +184,8 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
   const [recordingError, setRecordingError] = useState<string>();
   const [automationExecution, setAutomationExecution] = useState<AutomationExecution | undefined>(activeAutomationExecution);
   const [automationExecutionClock, setAutomationExecutionClock] = useState(Date.now());
+  // The execution whose stalled AI repair was already stopped (see the stall effect).
+  const stallHandledFor = useRef<string | undefined>(undefined);
   const [automationExecutionError, setAutomationExecutionError] = useState<string>();
   const profileCreateRequestRef = useRef<string | null>(null);
   const createdProfileRequests = useRef(new Map<string, string>());
@@ -457,17 +459,24 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
   useEffect(() => {
     if (!automationExecution || automationExecution.engine !== "agent" || !automationExecution.replyId || !automationExecution.repairValidationRequired) return;
     if (!["preparing", "running"].includes(automationExecution.phase) || automationExecutionClock - automationExecution.startedAt < 120_000) return;
-    const answer = automationAgentAnswer(automationExecution, s.conversations);
-    if (!answer || !["queued", "streaming"].includes(answer.status) || automationAgentBrowserActionCount(automationExecution, s.conversations) > 0) return;
+    // Handle a stall once per execution. Stopping the reply writes to the
+    // store, which re-renders and re-runs this effect before the execution
+    // below reaches local state; without the guard each pass stopped the reply
+    // and started another repair until React gave up (error #185, blank UI).
+    if (stallHandledFor.current === automationExecution.executionId) return;
+    const store = useStore.getState();
+    const answer = automationAgentAnswer(automationExecution, store.conversations);
+    if (!answer || !["queued", "streaming"].includes(answer.status) || automationAgentBrowserActionCount(automationExecution, store.conversations) > 0) return;
+    stallHandledFor.current = automationExecution.executionId;
     const attempt = automationExecution.repairAttempt || 0;
-    if (s.cancelQueuedReply(automationExecution.replyId) === false) s.stopReply(automationExecution.replyId);
+    if (store.cancelQueuedReply(automationExecution.replyId) === false) store.stopReply(automationExecution.replyId);
     if (attempt >= 1 || !automationExecution.workflowSnapshot) {
       setActiveAutomationExecution({ ...automationExecution, phase: "failed", progress: 100, detail: "AI repair made no browser progress after two attempts. Retry when the agent is available.", error: "AI repair stalled before its first browser action." });
       return;
     }
     const retrying: AutomationExecution = { ...automationExecution, executionId: uid(), replyId: undefined, startedAt: Date.now(), phase: "preparing", progress: 8, detail: "The first AI repair stalled. Restarting it once automatically…", repairAttempt: 1 };
     setActiveAutomationExecution(retrying);
-    void s.runLocalSkill(automationExecution.workflowSnapshot, automationRepairTask(
+    void store.runLocalSkill(automationExecution.workflowSnapshot, automationRepairTask(
       automationExecution.task,
       automationExecution.workflowSnapshot.actions,
       automationExecution.failedStep,
@@ -478,7 +487,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
       if (!replyId) return setActiveAutomationExecution({ ...retrying, phase: "failed", progress: 100, detail: "The automatic AI retry could not be started." });
       setActiveAutomationExecution({ ...retrying, replyId, phase: "running", detail: "AI repair restarted automatically…" });
     }).catch((error) => setActiveAutomationExecution({ ...retrying, phase: "failed", progress: 100, detail: error instanceof Error ? error.message : String(error) }));
-  }, [automationExecution?.executionId, automationExecution?.phase, automationExecution?.replyId, automationExecution?.startedAt, automationExecutionClock, s]);
+  }, [automationExecution?.executionId, automationExecution?.phase, automationExecution?.replyId, automationExecution?.startedAt, automationExecutionClock, s.conversations]);
 
   useEffect(() => {
     if (!automationExecution || automationExecution.engine !== "agent" || !automationExecution.repairValidationRequired || automationExecution.outputValidated || automationExecution.outputValidationError) return;

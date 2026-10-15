@@ -5265,6 +5265,16 @@ code { background: var(--surface-4); padding: 1px 5px; border-radius: 4px; }
   overflow-wrap: anywhere;
 }
 .personal-proxy-test-error span { display: block; margin-top: 3px; }
+.personal-proxy-test-ok {
+  margin: 0;
+  padding: 5px 9px;
+  border-radius: 8px;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 7%, var(--surface-2));
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .personal-proxy-row {
   display: flex;
   align-items: center;

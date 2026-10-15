@@ -19,6 +19,7 @@ import { cancelNextctlRun } from "../nextctl";
 import { conversationPreview, type AppTab, type BrowserWorkflowAction, type BrowserWorkflowSkill } from "../types";
 import { CountrySelect } from "./CountrySelect";
 import { PersonalProxySelect } from "./PersonalProxySelect";
+import { PersonalProxyTestStatus, type PersonalProxyTestState } from "./PersonalProxyTestStatus";
 import { UserFacingError } from "./UserFacingError";
 import { VPSSetupModal } from "./VPSSetupModal";
 import { CONNECTOR_PROMPT_RESUMED_EVENT, CONNECTORS } from "../connectorsCatalog";
@@ -59,6 +60,8 @@ import { automationRepairTask, parseAutomationRepairRecipe } from "../lib/automa
 type ManualProxyInputMode = "url" | "fields" | "bulk";
 type ProfileToolsetOption = "clawbrowser" | "dasbrowser" | "camoufox" | "multilogin";
 const PROFILE_CREATE_TIMEOUT_MS = 120_000;
+// How long a passed proxy test stays on screen; a failure stays until the next test.
+const PROXY_TEST_RESULT_MS = 30_000;
 
 function recordingDuration(startedAt: number, now = Date.now()) {
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
@@ -119,7 +122,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
   const [manualProxyEditing, setManualProxyEditing] = useState(false);
   const [manualProxyDeleting, setManualProxyDeleting] = useState<string | null>(null);
   const [manualProxyDeletePending, setManualProxyDeletePending] = useState(false);
-  const [proxyTestResults, setProxyTestResults] = useState<Record<string, { status: "testing" | "ok" | "fail"; detail: string }>>({});
+  const [proxyTestResults, setProxyTestResults] = useState<Record<string, PersonalProxyTestState>>({});
   const [createProfileOpen, setCreateProfileOpen] = useState(false);
   const [vpsSetupOpen, setVPSSetupOpen] = useState(false);
   const [profileName, setProfileName] = useState("");
@@ -908,7 +911,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
           const { [id]: _removed, ...rest } = current;
           return rest;
         });
-      }, 10_000);
+      }, PROXY_TEST_RESULT_MS);
     };
     s.testPersonalProxy(id)
       .then((result) => {
@@ -2623,7 +2626,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
                             <Icon name="trash" size={13} />
                           </button>
                         </div>
-                        {test?.status === "fail" && <p className="personal-proxy-test-error" role="alert">{test.detail} <span>Check the proxy details, then press Test to retry.</span></p>}
+                        <PersonalProxyTestStatus test={test} />
                         </div>
                       );
                     })}

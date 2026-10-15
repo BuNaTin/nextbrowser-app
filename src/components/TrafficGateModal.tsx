@@ -1,9 +1,9 @@
 import { useEffect } from "react";
 import { useStore } from "../store";
-import { discordUrl } from "../constants";
+import { discordUrl, repoUrl } from "../constants";
 import { trackEvent } from "../lib/analytics";
 import { shouldDismissModalWithEscape } from "../lib/modalKeyboard";
-import { freeTrafficAllowanceBytes, trafficGateState } from "../lib/trafficGate";
+import { trafficGateState } from "../lib/trafficGate";
 import { shouldAskForGitHubStar } from "../lib/githubStarReward";
 import { humanBytes } from "../types";
 import { Icon } from "./Icon";
@@ -14,7 +14,7 @@ import { Icon } from "./Icon";
  * was promised, so the first symptom is profiles refusing to start and pages
  * that never load. This modal is deliberately the loudest surface in the app —
  * it interrupts, it names the cause, and it hands over the one action that
- * lifts the pause.
+ * lifts the pause: a GitHub star. Discord stays for questions only.
  */
 export function TrafficGateModal() {
   const proxy = useStore((s) => s.proxy);
@@ -38,14 +38,15 @@ export function TrafficGateModal() {
   // the modal is up; the moment it does, the pause is over and it should go.
   if (!open || starAsked || trafficGateState(proxy) !== "blocked") return null;
 
-  const askInDiscord = () => {
-    trackEvent("proxy_traffic_gate_discord_opened", {
-      surface: "gate_modal",
-      proxy_state: proxy?.state ?? "unknown",
-      used_bytes_bucket: proxy ? Math.floor(proxy.used_bytes / (10 * 1024 * 1024)) * 10 : "unknown",
-    });
-    window.open(discordUrl, "_blank", "noopener,noreferrer");
+  const usedBucket = proxy ? Math.floor(proxy.used_bytes / (10 * 1024 * 1024)) * 10 : "unknown";
+  const openGitHub = () => {
+    trackEvent("proxy_traffic_gate_github_opened", { surface: "gate_modal", proxy_state: proxy?.state ?? "unknown", used_bytes_bucket: usedBucket });
+    window.open(repoUrl, "_blank", "noopener,noreferrer");
     setOpen(false);
+  };
+  const askInDiscord = () => {
+    trackEvent("proxy_traffic_gate_discord_opened", { surface: "gate_modal", proxy_state: proxy?.state ?? "unknown", used_bytes_bucket: usedBucket });
+    window.open(discordUrl, "_blank", "noopener,noreferrer");
   };
 
   return (
@@ -59,33 +60,35 @@ export function TrafficGateModal() {
         <div className="modal-title-row">
           <Icon name="lock.fill" size={18} />
           <div>
-            <strong id="traffic-gate-title">Your free proxy traffic is paused</strong>
+            <strong id="traffic-gate-title">Get 1 GB of free proxy traffic</strong>
             <div className="muted small">
-              {proxy ? `${humanBytes(proxy.used_bytes)} used` : "Traffic used"}
-              {" of your free "}
-              {humanBytes(freeTrafficAllowanceBytes)}
+              {proxy ? `${humanBytes(proxy.used_bytes)} used · ` : ""}
+              free traffic is paused
             </div>
           </div>
         </div>
         <p className="traffic-gate-modal-copy">
-          New accounts pause after the first few dozen megabytes so we can meet the people
-          using Nextbrowser. Say hi in Discord and we unlock the rest of your allowance by
-          hand. Feedback, repo stars, and pull requests earn more.
+          Connect GitHub and star <strong>nextbrowser-oss/nextbrowser-app</strong>. Your 1 GB
+          unlocks once the star is checked. If you remove the star later, the bonus pauses again.
         </p>
         <div className="traffic-gate-modal-effect">
           <Icon name="exclamationmark.triangle.fill" size={14} />
           <span>
-            Until then profiles will not start and pages will not load through the managed
-            proxy. Nothing runs without it, so your accounts stay on their own proxy.
+            Until then profiles on the managed proxy will not start and pages will not load
+            through it. Profiles on a direct connection or your own proxy keep working.
           </span>
         </div>
         <div className="modal-actions">
+          <button className="link small" type="button" onClick={askInDiscord}>
+            Questions? Ask in Discord
+          </button>
+          <span className="spacer" />
           <button className="btn-bordered" type="button" autoFocus onClick={() => setOpen(false)}>
             Later
           </button>
-          <button className="primary" type="button" onClick={askInDiscord}>
-            <Icon name="bubble.left.and.bubble.right.fill" size={13} />
-            Ask in Discord
+          <button className="primary" type="button" onClick={openGitHub}>
+            <Icon name="star.fill" size={13} />
+            Open GitHub
           </button>
         </div>
       </section>

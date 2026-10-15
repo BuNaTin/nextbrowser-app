@@ -1591,7 +1591,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
                 <UserFacingError
                   message={profileActionError}
                   surface="profile_action"
-                  discordLabel={isProxyTrafficGateMessage(profileActionError) ? "Ask in Discord." : undefined}
+                  discordLabel={isProxyTrafficGateMessage(profileActionError) ? "Questions? Ask in Discord." : undefined}
                 />
                 <button type="button" onClick={() => setProfileActionError(null)}>Dismiss</button>
               </div>

@@ -172,7 +172,7 @@ export function isTrustedNodeMavenURL(value?: string | null): value is string {
 /** The nextctl error code for a launch refused because the proxy traffic ran out. */
 const proxyTrafficExhaustedErrorCode = "PROXY_TRAFFIC_EXHAUSTED";
 
-export const proxyTrafficGateMessage = "Free traffic is paused. Ask in Discord to unlock the rest.";
+export const proxyTrafficGateMessage = "Free traffic is paused. Connect GitHub and star nextbrowser-oss/nextbrowser-app to get 1 GB.";
 
 export function isProxyTrafficExhaustedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");

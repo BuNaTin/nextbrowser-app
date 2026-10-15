@@ -14,17 +14,17 @@ describe("UserFacingError", () => {
     expect(html).toContain("Get help in Discord.");
   });
 
-  it("links to Discord under a custom label when the fix lives there", () => {
+  it("links to Discord under a custom label for questions", () => {
     const html = renderToStaticMarkup(
       <UserFacingError
-        message="Free traffic is paused. Ask in Discord to unlock the rest."
+        message="Free traffic is paused. Connect GitHub and star nextbrowser-oss/nextbrowser-app to get 1 GB."
         surface="test"
-        discordLabel="Ask in Discord."
+        discordLabel="Questions? Ask in Discord."
       />,
     );
 
     expect(html).toContain(`href="${discordUrl}"`);
-    expect(html).toContain("Ask in Discord.");
+    expect(html).toContain("Questions? Ask in Discord.");
     expect(html).not.toContain("Get help in Discord.");
   });
 

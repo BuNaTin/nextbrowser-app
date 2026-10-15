@@ -1003,6 +1003,12 @@ body.is-resizing-sidebar {
   max-width: 62ch;
   line-height: 1.5;
 }
+.proxy-traffic-gate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
 .github-star-card {
   margin-top: 13px;
   padding: 13px 14px;

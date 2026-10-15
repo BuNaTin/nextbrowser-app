@@ -8,6 +8,7 @@ import { Icon, Spinner } from "./Icon";
 import { withLocalScripts } from "../skillsCatalog";
 import { countryFlag, countryLabel, ROTATION_COUNTRIES } from "../lib/countryFlag";
 import { guideProfileTarget, guideWorkspaceProfileNames } from "../lib/guideQuickStart";
+import { profileRowStatusText } from "../lib/profileRowStatus";
 import { manualProxyDefaultName, manualProxyLimits, parseManualProxyBatch, parseManualProxyClipboard, validateManualProxyFields, type ManualProxyScheme } from "../lib/manualProxy";
 import { actionFailureMessage, internalError } from "../lib/userFacingError";
 import { userFacingBrowserError } from "../lib/userFacingBrowserError";
@@ -2896,11 +2897,11 @@ function ProfileRow({
         </span>
         {/* Badges share the status line so a narrow sidebar keeps the name readable. */}
         <span className="profile-meta-line">
-        <span className="profile-meta">
-          {metaOverride ?? (occupiedBy ? `In use · ${occupiedBy}` : status === "starting" ? "Starting and verifying" : ip ? `${status} · ${ip}` : status)}
+        {occupiedBy && <span className="profile-in-use-badge" title={`In use by “${occupiedBy}”`}>In use</span>}
+        <span className="profile-meta" title={occupiedBy ? `In use by “${occupiedBy}”` : undefined}>
+          {profileRowStatusText({ status, ip, occupiedBy, metaOverride })}
         </span>
       <span className="profile-badges">
-        {occupiedBy && <span className="profile-in-use-badge">In use</span>}
         {country && (
           <span className="badge profile-country-badge" title={countryLabel(country, city)}>
             {countryFlag(country)} {country.toUpperCase()}

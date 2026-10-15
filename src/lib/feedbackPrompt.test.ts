@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { markFeedbackSubmitted, shouldPromptForFeedback } from "./feedbackPrompt";
+import { feedbackPromptBlocked, feedbackPromptConfig, markFeedbackSubmitted, shouldPromptForFeedback, type FeedbackPromptBlockers } from "./feedbackPrompt";
 
 function storage(): Storage {
   const values = new Map<string, string>();
@@ -27,5 +27,28 @@ describe("feedback prompt cadence", () => {
     markFeedbackSubmitted(local, 1_000_000);
     expect(Array.from({ length: 100 }, () => shouldPromptForFeedback(local))).toEqual(Array(100).fill(false));
     expect(JSON.parse(local.getItem("nextbrowser.feedbackPrompt.v1")!).submittedAt).toBe(1_000_000);
+  });
+});
+
+describe("feedback prompt timing", () => {
+  const closed: FeedbackPromptBlockers = {
+    onboarding: false,
+    agentGate: false,
+    trafficGate: false,
+    githubStar: false,
+    appUpdate: false,
+    runtimeUpdate: false,
+    settings: false,
+  };
+
+  it("waits while any other dialog is open", () => {
+    expect(feedbackPromptBlocked(closed)).toBe(false);
+    for (const dialog of Object.keys(closed) as (keyof FeedbackPromptBlockers)[]) {
+      expect(feedbackPromptBlocked({ ...closed, [dialog]: true })).toBe(true);
+    }
+  });
+
+  it("never asks in the first seconds of a start", () => {
+    expect(feedbackPromptConfig.delayMs).toBeGreaterThanOrEqual(10_000);
   });
 });

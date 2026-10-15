@@ -1,5 +1,8 @@
 const STATE_KEY = "nextbrowser.feedbackPrompt.v1";
 const PROMPT_EVERY_OPENS = 5;
+// The traffic gate and the GitHub star ask open only once the account has
+// loaded, a few seconds into a start; the optional ask comes after them.
+const PROMPT_DELAY_MS = 30_000;
 
 interface FeedbackPromptState {
   opens: number;
@@ -43,6 +46,23 @@ export function markFeedbackSubmitted(storage: Storage, now = Date.now()): void 
   save(storage, { opens: 0, submittedAt: now });
 }
 
+/** Dialogs that can be open when the automatic ask comes due. */
+export interface FeedbackPromptBlockers {
+  onboarding: boolean;
+  agentGate: boolean;
+  trafficGate: boolean;
+  githubStar: boolean;
+  appUpdate: boolean;
+  runtimeUpdate: boolean;
+  settings: boolean;
+}
+
+/** The automatic ask is optional: it never opens on top of another dialog. */
+export function feedbackPromptBlocked(dialogs: FeedbackPromptBlockers): boolean {
+  return Object.values(dialogs).some(Boolean);
+}
+
 export const feedbackPromptConfig = {
   everyOpens: PROMPT_EVERY_OPENS,
+  delayMs: PROMPT_DELAY_MS,
 };

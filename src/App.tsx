@@ -45,7 +45,7 @@ import { AgentInstallLink } from "./components/AgentInstallLink";
 import { ConnectorsView } from "./components/ConnectorsView";
 import { AutomationStudio } from "./components/AutomationStudio";
 import { FeedbackModal } from "./components/FeedbackModal";
-import { markFeedbackSubmitted, shouldPromptForFeedback } from "./lib/feedbackPrompt";
+import { feedbackPromptBlocked, feedbackPromptConfig, markFeedbackSubmitted, shouldPromptForFeedback } from "./lib/feedbackPrompt";
 import { multiloginSelectionForWorkspace } from "./lib/multiloginSelection";
 import { countWorkspaceProfiles } from "./lib/workspaceProfiles";
 
@@ -945,7 +945,10 @@ export function App() {
   const [browserInstallHiddenKey, setBrowserInstallHiddenKey] = useState<string>();
   const [agentGateDismissed, setAgentGateDismissed] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackPromptPending, setFeedbackPromptPending] = useState(false);
   const feedbackPromptEvaluated = useRef(false);
+  const trafficGatePromptOpen = useStore((s) => s.trafficGatePromptOpen && trafficGateState(s.proxy) === "blocked");
+  const githubStarPromptOpen = useStore((s) => s.githubStarPromptOpen && shouldAskForGitHubStar(s.githubStar));
   const githubStarPromptEvaluated = useRef(false);
   const githubStar = useStore((s) => s.githubStar);
   const setGitHubStarPromptOpen = useStore((s) => s.setGitHubStarPromptOpen);
@@ -1038,11 +1041,34 @@ export function App() {
     // feedback depend on which agent the user has selected.
     if (feedbackPromptEvaluated.current || !feedbackAvailable || showOnboarding || workspaceSetupRequired) return;
     feedbackPromptEvaluated.current = true;
-    if (shouldPromptForFeedback(localStorage)) {
+    if (shouldPromptForFeedback(localStorage)) setFeedbackPromptPending(true);
+  }, [feedbackAvailable, showOnboarding, workspaceSetupRequired]);
+
+  const feedbackPromptWaiting = feedbackPromptBlocked({
+    onboarding: showOnboarding || workspaceSetupRequired,
+    agentGate: agentGateOpen,
+    trafficGate: trafficGatePromptOpen,
+    githubStar: githubStarPromptOpen,
+    appUpdate: updateAvailable(appUpdate) && appUpdate.version !== updatePromptDismissedVersion,
+    runtimeUpdate: !!runtimeUpdatePrompt,
+    settings: settingsOpen,
+  });
+  useEffect(() => {
+    // The due ask waits until the start has settled and no other dialog is
+    // open, so it never lands on top of the traffic gate or a setup step.
+    if (!feedbackPromptPending || !feedbackAvailable || feedbackPromptWaiting) return;
+    const timer = window.setTimeout(() => {
+      setFeedbackPromptPending(false);
       setFeedbackOpen(true);
       trackEvent("feedback_prompt_shown", { trigger: "fifth_open" });
-    }
-  }, [feedbackAvailable, showOnboarding, workspaceSetupRequired]);
+    }, feedbackPromptConfig.delayMs);
+    return () => window.clearTimeout(timer);
+  }, [feedbackPromptPending, feedbackAvailable, feedbackPromptWaiting]);
+
+  useEffect(() => {
+    // Opening feedback by hand answers this launch's ask.
+    if (feedbackOpen) setFeedbackPromptPending(false);
+  }, [feedbackOpen]);
 
   useEffect(() => {
     // Once per launch, once the app is usable: a GitHub sign-up that has not

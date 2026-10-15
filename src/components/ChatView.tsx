@@ -46,7 +46,7 @@ async function authorWorkflowWithAgent(agent: AgentSpec, workingDir: string, fal
   const { args, stdin } = agent.id === "codex"
     ? { args: ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"], stdin: prompt }
     : agent.id === "claude"
-      ? { args: ["-p", "--permission-mode", "dontAsk", "--tools", "", prompt], stdin: undefined }
+      ? { args: ["-p", "--permission-mode", "dontAsk", "--tools", ""], stdin: prompt }
       : invocation;
   try {
     const result = await invoke<{ code: number; stdout: string }>("workflow_author_run", {

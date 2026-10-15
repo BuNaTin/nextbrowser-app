@@ -46,6 +46,8 @@ import { ConnectorsView } from "./components/ConnectorsView";
 import { AutomationStudio } from "./components/AutomationStudio";
 import { FeedbackModal } from "./components/FeedbackModal";
 import { markFeedbackSubmitted, shouldPromptForFeedback } from "./lib/feedbackPrompt";
+import { multiloginSelectionForWorkspace } from "./lib/multiloginSelection";
+import { countWorkspaceProfiles } from "./lib/workspaceProfiles";
 
 const TABS: { id: AppTab; label: string; icon?: string }[] = [
   { id: "chat", label: "Project", icon: "folder" },
@@ -574,11 +576,15 @@ function SettingsModal({
   const authorizeAgent = useStore((s) => s.authorizeAgent);
   const loginAgent = useStore((s) => s.loginAgent);
   const logoutAgent = useStore((s) => s.logoutAgent);
-  const profiles = useStore((s) => {
-    const defaultKnown = !!s.defaultSession?.session?.name || (s.defaultSession?.status ?? "unknown") !== "unknown";
-    const hasListedDefault = s.profiles.some((profile) => profile.name === "default");
-    return s.profiles.length + (defaultKnown && !hasListedDefault ? 1 : 0);
-  });
+  // The active workspace's profiles, as the sidebar counts them; the local
+  // inventory also holds the profiles of every other workspace.
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const hasMultiloginProfile = !!multiloginSelectionForWorkspace(activeWorkspaceId);
+  const profiles = useStore((s) => countWorkspaceProfiles(
+    s.workspaces.find((workspace) => workspace.id === s.activeWorkspaceId),
+    s.profiles,
+    hasMultiloginProfile,
+  ));
   const proxy = useStore((s) => s.proxy);
   const agentSpec = agentById(agentId);
   const agentName = agentSpec.name;

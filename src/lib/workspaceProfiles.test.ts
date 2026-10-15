@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Workspace } from "../types";
-import { moveProfileToWorkspace } from "./workspaceProfiles";
+import { countWorkspaceProfiles, moveProfileToWorkspace } from "./workspaceProfiles";
 
 const workspaces: Workspace[] = [
   { id: "one", name: "One", profileNames: ["browser"], profileToolsets: { browser: "dasbrowser" }, profileProxyIds: { browser: "proxy-id" }, createdAt: 1, updatedAt: 1 },
@@ -18,5 +18,21 @@ describe("moveProfileToWorkspace", () => {
 
   it("does not modify an already selected workspace", () => {
     expect(moveProfileToWorkspace(workspaces, "browser", "one", 10)).toBe(workspaces);
+  });
+});
+
+describe("countWorkspaceProfiles", () => {
+  const inventory = [{ name: "browser" }, { name: "other" }, { name: "default" }];
+
+  it("counts only the active workspace's profiles, not every local profile", () => {
+    expect(countWorkspaceProfiles(workspaces[0], inventory, false)).toBe(1);
+    expect(countWorkspaceProfiles(workspaces[1], inventory, false)).toBe(1);
+  });
+
+  it("skips assignments whose profile is gone and counts the picked Multilogin profile", () => {
+    const workspace = { profileNames: ["browser", "deleted", "__default"] };
+    expect(countWorkspaceProfiles(workspace, inventory, false)).toBe(1);
+    expect(countWorkspaceProfiles(workspace, inventory, true)).toBe(2);
+    expect(countWorkspaceProfiles(undefined, inventory, false)).toBe(0);
   });
 });

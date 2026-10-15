@@ -19,7 +19,7 @@ import { BrandLogo } from "./components/BrandLogo";
 import { Icon, Spinner } from "./components/Icon";
 import { AgentPicker } from "./components/AgentPicker";
 import { brandName, discordUrl, latestReleaseUrl, repoUrl } from "./constants";
-import { trafficAllowanceBytes, trafficAllowanceFraction } from "./lib/trafficGate";
+import { trafficAllowanceBytes, trafficAllowanceFraction, trafficGateState, trafficGateStateLabel } from "./lib/trafficGate";
 import { getPreviewMode, getPreviewNodeMavenState, getPreviewTab } from "./preview";
 import { humanBytes, type AppTab, type Conversation } from "./types";
 import { resolveTheme, type Theme } from "./theme";
@@ -588,6 +588,8 @@ function SettingsModal({
   const proxyUsed = proxy ? humanBytes(proxy.used_bytes) : "Locked";
   const proxyLimit = proxyAllowance != null ? humanBytes(proxyAllowance) : proxy ? "unlimited" : "Sign in";
   const proxyPercent = proxy?.limited ? Math.round(trafficAllowanceFraction(proxy) * 100) : null;
+  // A paused account has nothing left of the 1 GiB it is shown; say so instead of the share used.
+  const proxyPaused = trafficGateState(proxy) === "blocked";
   const handleAgentLogout = async () => {
     if (agentLogoutPending) return;
     setAgentLogoutPending(true);
@@ -803,7 +805,11 @@ function SettingsModal({
                 {proxy ? `${proxyUsed} / ${proxyLimit}` : "Traffic, allocation, and usage history"}
               </span>
             </span>
-            {proxyPercent != null && <span className="status-pill">{proxyPercent}%</span>}
+            {proxyPercent != null && (
+              <span className={`status-pill${proxyPaused ? " proxy-state paused" : ""}`}>
+                {proxyPaused ? trafficGateStateLabel(proxy) : `${proxyPercent}%`}
+              </span>
+            )}
             <Icon name="chevron.right" size={14} className="muted" />
           </button>
         </div>

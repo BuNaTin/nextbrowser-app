@@ -1420,7 +1420,17 @@ let accountEpoch = 0;
 // The account epoch whose browser profile inventory has been read at least
 // once. Before that `profiles` is empty, not authoritative.
 let profileInventoryEpoch = -1;
+// The account epoch whose closed free traffic gate has already raised its
+// prompt. A closed gate interrupts once per start; after that the Usage card
+// and the launch error say why, until the gate opens and closes again.
+let trafficGatePromptEpoch: number | undefined;
 const PROJECT_SYNC_DELAY_MS = 750;
+
+function raiseTrafficGatePrompt() {
+  if (trafficGatePromptEpoch === accountEpoch) return;
+  trafficGatePromptEpoch = accountEpoch;
+  useStore.getState().setTrafficGatePromptOpen(true);
+}
 
 function runScheduledProjectSync() {
   projectSyncTimer = undefined;
@@ -3614,6 +3624,9 @@ export const useStore = create<State>((set, get) => {
       trafficGateState(p) === "blocked" && trafficGateState(get().proxy) !== "blocked";
     const gateJustReopened =
       trafficGateState(get().proxy) === "blocked" && trafficGateState(p) !== "blocked";
+    // Only a real reopening lets the next closing interrupt again. An
+    // allocation that briefly could not be read is not the pause lifting.
+    if (gateJustReopened && trafficGateState(p) !== "unknown") trafficGatePromptEpoch = undefined;
     const snap: UsageSnapshot = {
       id: uid(),
       date: now(),
@@ -3646,7 +3659,7 @@ export const useStore = create<State>((set, get) => {
     if (gateJustClosed && epoch === accountEpoch) {
       // A GitHub sign-up lifts its limit with a star, not a Discord message.
       if (get().githubStar?.required) get().setGitHubStarPromptOpen(true);
-      else get().setTrafficGatePromptOpen(true);
+      else raiseTrafficGatePrompt();
     }
     trackEvent("proxy_loaded", {
       proxy_state: p.state,
@@ -3992,11 +4005,11 @@ export const useStore = create<State>((set, get) => {
         // A launch refused for exhausted traffic means the gate just closed:
         // refresh the allocation so Proxy usage shows it as paused right away.
         if (isProxyTrafficExhaustedError(error)) {
-          // The user just hit the closed gate head-on, so say why even when the
-          // prompt was dismissed earlier in this session.
+          // Say why with the prompt unless it already interrupted this start;
+          // once dismissed, the launch error itself names the pause.
           void get().refreshProxyData()
             .then(() => {
-              if (trafficGateState(get().proxy) === "blocked") get().setTrafficGatePromptOpen(true);
+              if (trafficGateState(get().proxy) === "blocked") raiseTrafficGatePrompt();
             })
             .catch(() => undefined);
         }

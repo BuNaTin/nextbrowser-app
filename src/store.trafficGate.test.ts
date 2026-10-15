@@ -18,6 +18,9 @@ vi.mock("./lib/analytics", () => ({
   trackTiming: vi.fn(),
 }));
 
+const preflight = vi.hoisted(() => ({ prepareSession: vi.fn() }));
+vi.mock("./preflight", () => ({ prepareSession: preflight.prepareSession, tidyEngineTabs: vi.fn() }));
+
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
   return {
@@ -145,6 +148,53 @@ describe("free traffic gate prompt", () => {
     };
     await useStore.getState().loadProxy();
     expect(useStore.getState().trafficGatePromptOpen).toBe(true);
+  });
+
+  it("interrupts once per start, not again when a launch is refused after Later", async () => {
+    const { useStore } = await import("./store");
+    const proxyReads = () => bridge.invoke.mock.calls.filter(([, payload]) => payload?.args?.[0] === "proxy-traffic").length;
+    traffic = {
+      limited: true,
+      used_bytes: 134 * mebibyte,
+      limit_bytes: 134 * mebibyte,
+      remaining_bytes: 0,
+      state: "exhausted",
+    };
+
+    // The startup refresh finds the gate closed and raises the prompt.
+    await useStore.getState().loadProxy();
+    expect(useStore.getState().trafficGatePromptOpen).toBe(true);
+    useStore.getState().setTrafficGatePromptOpen(false);
+
+    // nextctl then refuses a profile for the same pause.
+    preflight.prepareSession.mockRejectedValue(new Error("[PROXY_TRAFFIC_EXHAUSTED] Traffic exhausted"));
+    await expect(useStore.getState().startProfile("qa")).rejects.toThrow("PROXY_TRAFFIC_EXHAUSTED");
+    await vi.waitFor(() => expect(proxyReads()).toBe(2));
+    await vi.waitFor(() => expect(useStore.getState().isRefreshing).toBe(false));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(useStore.getState().trafficGatePromptOpen).toBe(false);
+  });
+
+  it("does not take an unreadable allocation for the gate opening", async () => {
+    const { useStore } = await import("./store");
+    const closed = {
+      limited: true,
+      used_bytes: 141 * mebibyte,
+      limit_bytes: 141 * mebibyte,
+      remaining_bytes: 0,
+      state: "exhausted",
+    };
+    traffic = closed;
+    await useStore.getState().loadProxy();
+    useStore.getState().setTrafficGatePromptOpen(false);
+
+    traffic = { limited: true, used_bytes: 141 * mebibyte, limit_bytes: null, state: "exhausted" };
+    await useStore.getState().loadProxy();
+    traffic = closed;
+    await useStore.getState().loadProxy();
+
+    expect(useStore.getState().trafficGatePromptOpen).toBe(false);
   });
 
   it("leaves an account with the full free allowance alone", async () => {

@@ -1623,6 +1623,14 @@ body.is-resizing-sidebar {
   background: var(--red-soft);
   color: var(--red);
 }
+.status-pill.proxy-state.ok {
+  background: var(--green-soft);
+  color: var(--green);
+}
+.status-pill.proxy-state.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
 .agent-primary { display: flex; gap: 8px; margin: 8px 0; }
 .chip {
   flex: 1;

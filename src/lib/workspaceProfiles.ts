@@ -31,3 +31,18 @@ export function moveProfileToWorkspace(
     return { ...workspace, profileNames, profileToolsets, profileProxyIds, updatedAt: Math.max(updatedAt, workspace.updatedAt + 1) };
   });
 }
+
+/**
+ * The profiles a workspace lists, counted the way the sidebar counts them: its
+ * assigned profiles that still exist in the browser inventory, plus the
+ * Multilogin profile picked for it. Other workspaces' profiles are not its own.
+ */
+export function countWorkspaceProfiles(
+  workspace: Pick<Workspace, "profileNames"> | undefined,
+  inventory: ReadonlyArray<{ name: string }>,
+  hasMultiloginProfile: boolean,
+): number {
+  const existing = new Set(inventory.map((profile) => profile.name));
+  const listed = (workspace?.profileNames ?? []).filter((name) => existing.has(name)).length;
+  return listed + (hasMultiloginProfile ? 1 : 0);
+}

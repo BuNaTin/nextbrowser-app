@@ -51,6 +51,7 @@ vi.mock("../store", () => ({
   useStore: (selector: (value: typeof state) => unknown) => selector(state),
 }));
 
+import { trackEvent } from "../lib/analytics";
 import { OnboardingView } from "./OnboardingView";
 
 function text(node: ReactNode): string {
@@ -201,5 +202,64 @@ describe("profile step on a computer without the workspace's profiles", () => {
 
     expect(state.suspendOnboardingForSetup).toHaveBeenCalledOnce();
     expect(dispatched).toHaveBeenCalledExactlyOnceWith("nextbrowser:open-profile-creator");
+  });
+});
+
+describe("onboarding funnel events", () => {
+  const events = () => vi.mocked(trackEvent).mock.calls.map(([name, params]) => [name, params]);
+
+  it("completes the step the user continues from and says whether it is done", () => {
+    state.onboardingStepIndex = 2;
+    state.statuses = { work: "running" };
+
+    press("Continue");
+
+    expect(state.setOnboardingStepIndex).toHaveBeenCalledExactlyOnceWith(3);
+    expect(events()).toEqual([
+      ["onboarding_step_completed", expect.objectContaining({ step: "profile", step_number: 3, via: "continue", ready: true })],
+    ]);
+  });
+
+  it("marks a step the user passes without doing it as not ready", () => {
+    state.onboardingStepIndex = 2;
+
+    press("Continue");
+
+    expect(events()).toEqual([
+      ["onboarding_step_completed", expect.objectContaining({ step: "profile", ready: false })],
+    ]);
+  });
+
+  it("completes nothing when the user goes back", () => {
+    state.onboardingStepIndex = 2;
+
+    press("Back");
+
+    expect(state.setOnboardingStepIndex).toHaveBeenCalledExactlyOnceWith(1);
+    expect(events()).toEqual([]);
+  });
+
+  it("completes the Live step before closing the tour into Live", () => {
+    state.statuses = { work: "running" };
+
+    press("Open Live");
+
+    expect(events()).toEqual([
+      ["onboarding_step_completed", expect.objectContaining({ step: "control", via: "open_live", ready: true })],
+      ["onboarding_closed", expect.objectContaining({ reason: "completed", last_step: "control", agent_ready: true, profile_count: 1 })],
+    ]);
+    expect(state.setTab).toHaveBeenCalledWith("live");
+    expect(state.finishOnboarding).toHaveBeenCalledOnce();
+  });
+
+  it("closes as skipped without completing the step on screen", () => {
+    state.onboardingStepIndex = 1;
+
+    press("Skip tutorial");
+
+    expect(events()).toEqual([
+      ["onboarding_closed", expect.objectContaining({ reason: "skipped", last_step: "agent" })],
+    ]);
+    expect(state.finishOnboarding).toHaveBeenCalledOnce();
   });
 });

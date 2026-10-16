@@ -7,6 +7,7 @@ import {
   onboardingProfileChoices,
   onboardingProfileSummary,
 } from "../lib/onboarding";
+import { onboardingFunnel, onboardingTrigger, type OnboardingStepExit } from "../lib/onboardingFunnel";
 import { openGuideChatDraft } from "../lib/guideDraft";
 import { guideWorkspaceProfileNames } from "../lib/guideQuickStart";
 import { workspaceHasNoLocalProfiles } from "../lib/workspaceProfiles";
@@ -75,22 +76,29 @@ export function OnboardingView() {
   useEffect(() => {
     headingRef.current?.focus();
     setTryChatConfirmOpen(false);
-    trackEvent("onboarding_step_viewed", {
-      step: current.id,
-      step_number: stepIndex + 1,
-    });
+    onboardingFunnel.viewStep(current.id, onboardingTrigger(localStorage));
   }, [current.id, stepIndex]);
 
-  const goToStep = (index: number) => {
+  // A step counts as completed when the user leaves it forward. The event says
+  // whether the step's own criterion held at that moment.
+  const completeCurrentStep = (via: OnboardingStepExit) => {
+    onboardingFunnel.completeStep(current.id, via, {
+      accountConnected: authed,
+      agentReady: ready,
+      profileRunning: selectedSessionRunning,
+    });
+  };
+
+  const goToStep = (index: number, via: OnboardingStepExit = "rail") => {
+    if (index > stepIndex) completeCurrentStep(via);
     setStepIndex(Math.max(0, Math.min(ONBOARDING_STEPS.length - 1, index)));
   };
 
   const closeTutorial = useCallback((reason: "skipped" | "completed", destination?: AppTab) => {
-    trackEvent("onboarding_closed", {
-      reason,
-      last_step: current.id,
-      agent_ready: ready,
-      profile_count: profileCount,
+    onboardingFunnel.close(reason, {
+      lastStep: current.id,
+      agentReady: ready,
+      profileCount,
     });
     if (destination) setTab(destination);
     if (destination === "guide") setSidebarCollapsed(false);
@@ -220,6 +228,7 @@ export function OnboardingView() {
     if (!prompt) return;
     trackEvent("onboarding_try_chat_confirmed");
     setTryChatConfirmOpen(false);
+    completeCurrentStep("try_chat");
     closeTutorial("completed");
   };
 
@@ -523,7 +532,7 @@ export function OnboardingView() {
                     <button
                       type="button"
                       className="btn-bordered-prominent"
-                      onClick={() => closeTutorial("completed", "live")}
+                      onClick={() => { completeCurrentStep("open_live"); closeTutorial("completed", "live"); }}
                     >
                       Open Live
                       <Icon name="chevron.right" size={13} />
@@ -566,12 +575,12 @@ export function OnboardingView() {
             )}
             <span className="spacer" />
             {isLastStep ? (
-              <button type="button" className="btn-bordered-prominent" onClick={() => closeTutorial("completed", "guide")}>
+              <button type="button" className="btn-bordered-prominent" onClick={() => { completeCurrentStep("finish"); closeTutorial("completed", "guide"); }}>
                 Continue in Guide
                 <Icon name="chevron.right" size={13} />
               </button>
             ) : (
-              <button type="button" className="btn-bordered-prominent" onClick={() => goToStep(stepIndex + 1)}>
+              <button type="button" className="btn-bordered-prominent" onClick={() => goToStep(stepIndex + 1, "continue")}>
                 Continue
                 <Icon name="chevron.right" size={13} />
               </button>

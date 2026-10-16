@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { personalProxyUsers, useStore, type ManualProxyProfileInput } from "../store";
 import { agentById } from "../agents";
 import { shouldDismissModalWithEscape } from "../lib/modalKeyboard";
+import { trackEvent } from "../lib/analytics";
 import { BrandHeader, BrandLogo } from "./BrandLogo";
 import { Icon, Spinner } from "./Icon";
 import { withLocalScripts } from "../skillsCatalog";
@@ -240,6 +241,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
     try {
       const available = await invoke<boolean>("browser_runtime_available", { runtime });
       if (!available) {
+        trackEvent("browser_runtime_download_prompted", { runtime });
         setPendingRuntimeInstall({ profile, runtime, onSettled });
         return;
       }
@@ -253,6 +255,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
 
   const cancelRuntimeInstall = () => {
     const request = pendingRuntimeInstall;
+    if (request) trackEvent("browser_runtime_download_decided", { runtime: request.runtime, decision: "cancel" });
     setPendingRuntimeInstall(undefined);
     request?.onSettled?.();
   };
@@ -260,6 +263,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
   const confirmRuntimeInstall = () => {
     const request = pendingRuntimeInstall;
     if (!request) return;
+    trackEvent("browser_runtime_download_decided", { runtime: request.runtime, decision: "download" });
     setPendingRuntimeInstall(undefined);
     void runProfileAction(`We couldn't start “${request.profile}”.`, "PROFILE_START_FAILED", () => s.startProfile(request.profile)).then(request.onSettled);
   };

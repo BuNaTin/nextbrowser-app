@@ -51,6 +51,8 @@ it("creates a default workspace, project, and one profile per toolset without a 
   expect(state.workspaceSetupAuto).toBe("done");
   // The first task runs in the selected profile, so one is selected for it.
   expect(state.selectedProfile).toBe("Clawbrowser profile");
+  const { trackTiming } = await import("./lib/analytics");
+  expect(trackTiming).toHaveBeenCalledWith("workspace_auto_setup_completed", expect.any(Number), { profiles_created: 3, profiles_failed: 0 });
 });
 
 it("keeps the new workspace usable when optional default profiles cannot be created", async () => {
@@ -68,6 +70,8 @@ it("keeps the new workspace usable when optional default profiles cannot be crea
   const state = useStore.getState();
   expect(state.workspaceSetupRequired).toBe(false);
   expect(state.workspaceSetupAuto).toBe("done");
+  const { trackTiming } = await import("./lib/analytics");
+  expect(trackTiming).toHaveBeenCalledWith("workspace_auto_setup_completed", expect.any(Number), { profiles_created: 0, profiles_failed: 3 });
 });
 
 it("never repopulates an existing empty workspace or deleted defaults", async () => {

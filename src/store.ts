@@ -99,8 +99,16 @@ import { agentEmptyReplyMessage } from "./lib/agentRunResult";
 import { isBrowserVerificationFailure, userFacingBrowserError } from "./lib/userFacingBrowserError";
 import {
   hasCompletedCurrentOnboarding,
+  ONBOARDING_STEPS,
   saveOnboardingCompletion,
 } from "./lib/onboarding";
+import {
+  browserProfileRunning,
+  isFirstTaskExample,
+  onboardingFunnel,
+  trackFirstTaskSubmitted,
+  trackFirstTaskSucceeded,
+} from "./lib/onboardingFunnel";
 import type { RemoteStreamInfo } from "./remoteControl";
 import { appendAppData, loadJson, saveJson } from "./lib/storage";
 import { apiBaseUrl, discordUrl } from "./constants";
@@ -957,8 +965,9 @@ const DEFAULT_WORKSPACE_TOOLSETS: { runtime: BrowserToolset; name: string }[] = 
 // computer that created them, so a workspace synced from another computer can
 // list profiles that are not here. Those do not count, and their names stay
 // taken so this computer's profiles never replace them in the workspace.
-async function createDefaultWorkspaceProfiles(workspaceId: string): Promise<{ created: string[]; failure?: unknown }> {
+async function createDefaultWorkspaceProfiles(workspaceId: string): Promise<{ created: string[]; failed: number; failure?: unknown }> {
   const created: Array<{ name: string; runtime: BrowserToolset }> = [];
+  let failed = 0;
   let failure: unknown;
   const initial = useStore.getState();
   const chosen = initial.selectedProfile
@@ -986,6 +995,7 @@ async function createDefaultWorkspaceProfiles(workspaceId: string): Promise<{ cr
       }
     } catch (error) {
       console.warn("[AUTO_SETUP_PROFILE_FAILED]", runtime, error);
+      failed += 1;
       failure = error;
     }
   }
@@ -997,7 +1007,7 @@ async function createDefaultWorkspaceProfiles(workspaceId: string): Promise<{ cr
   if (created.length && state.activeWorkspaceId === workspaceId) {
     state.selectProfile(chosen ?? (created.find((profile) => profile.runtime === "clawbrowser") ?? created[0]).name);
   }
-  return { created: created.map((profile) => profile.name), failure };
+  return { created: created.map((profile) => profile.name), failed, failure };
 }
 
 // Guard bootstrap against re-entry. React StrictMode invokes effects twice in
@@ -2145,6 +2155,16 @@ export const useStore = create<State>((set, get) => {
       execution_target: executionTarget,
       prompt_length_bucket: Math.min(5000, Math.ceil(prompt.length / 250) * 250),
     });
+    trackFirstTaskSubmitted(
+      localStorage,
+      get().conversations.some((conversation) => conversation.messages.some((message) => message.role === "user")),
+      {
+        agent: agentId,
+        chip_kind: chip?.kind ?? "none",
+        execution_target: executionTarget,
+        from_example: isFirstTaskExample(prompt),
+      },
+    );
     set((state) => {
       const conversations = state.conversations.map((conversation) =>
         conversation.id === cid
@@ -2187,6 +2207,7 @@ export const useStore = create<State>((set, get) => {
       get().agentId;
     const executionTarget = replyExecutionTargets.get(replyId) ??
       executionTargetForTurn(owningConversation);
+    const profilesRunningAtStart = replyProfileBaselines.get(replyId)?.size ?? 0;
     replyProfileBaselines.delete(replyId);
     const authFailed = result.code !== 0 && /(?:failed to authenticate|oauth session expired|could not be refreshed|not logged in|sign in required|login required)/i.test(`${result.stderr}\n${result.stdout}`);
     if (authFailed) {
@@ -2237,6 +2258,26 @@ export const useStore = create<State>((set, get) => {
       exit_code: result.code,
       execution_target: executionTarget,
     });
+    const finished = get().conversations.find((conversation) => conversation.id === owningConversationId);
+    const replyIndex = finished?.messages.findIndex((message) => message.id === replyId) ?? -1;
+    if (finished && finished.messages[replyIndex]?.status === "done") {
+      const request = finished.messages.slice(0, replyIndex).reverse().find((message) => message.role === "user");
+      const state = get();
+      trackFirstTaskSucceeded(
+        localStorage,
+        browserProfileRunning(
+          state.workspaces.find((workspace) => workspace.id === finished.workspaceId)?.profileNames ?? [],
+          state.statuses,
+          state.defaultSession?.status,
+          profilesRunningAtStart,
+        ),
+        {
+          agent: agentId,
+          execution_target: executionTarget,
+          from_example: !!request && isFirstTaskExample(request.text),
+        },
+      );
+    }
     try {
       if (executionTarget === "local" && !pendingTarget(get(), "vps")) await get().refreshAll();
     } finally {
@@ -5001,6 +5042,7 @@ export const useStore = create<State>((set, get) => {
       onboardingReturnPending: false,
       onboardingSetupError: error,
     });
+    onboardingFunnel.resume(ONBOARDING_STEPS[get().onboardingStepIndex]?.id, !!error);
   },
   finishOnboarding: () => {
     saveOnboardingCompletion(localStorage);
@@ -5604,6 +5646,7 @@ export const useStore = create<State>((set, get) => {
     }
     defaultSetupInFlight = true;
     set({ workspaceSetupAuto: "running" });
+    const startedAt = performance.now();
     try {
       // A workspace mutation is rejected while a cloud sync is in flight.
       const deadline = now() + 30_000;
@@ -5623,14 +5666,19 @@ export const useStore = create<State>((set, get) => {
           window.dispatchEvent(new CustomEvent("nextbrowser:project-created", { detail: { id: projectId } }));
         }
       }
-      await createDefaultWorkspaceProfiles(workspaceId);
+      const { created, failed } = await createDefaultWorkspaceProfiles(workspaceId);
       await get().loadProfiles();
       const state = get();
       const stillRequired = requiresWorkspaceSetup(state.workspaces, state.conversations, state.activeWorkspaceId, state.accountOwnerId);
       set({ workspaceSetupRequired: stillRequired, workspaceSetupAuto: stillRequired ? "failed" : "done" });
+      trackTiming(stillRequired ? "workspace_auto_setup_failed" : "workspace_auto_setup_completed", startedAt, {
+        profiles_created: created.length,
+        profiles_failed: failed,
+      });
     } catch (error) {
       console.error("[AUTO_SETUP_FAILED]", error);
       set({ workspaceSetupAuto: "failed" });
+      trackTiming("workspace_auto_setup_failed", startedAt, { reason: "error" });
     } finally {
       defaultSetupInFlight = false;
     }

@@ -23,6 +23,11 @@ function officialDasbrowserURLFromHTML(html, platform, fallback = DASBROWSER_DOW
   return fallback;
 }
 
+function windowsDasbrowserRoots({ homeDir, env = {}, runtimeRoot }) {
+  const local = env.LOCALAPPDATA || path.join(homeDir, "AppData", "Local");
+  return [local, env.ProgramFiles, env["ProgramFiles(x86)"], path.join(runtimeRoot, "data")].filter(Boolean);
+}
+
 function dasbrowserRuntimeCandidates({ platform, homeDir, env = {}, runtimeRoot }) {
   const candidates = [];
   if (env.DASBROWSER_BIN) candidates.push(env.DASBROWSER_BIN);
@@ -33,8 +38,7 @@ function dasbrowserRuntimeCandidates({ platform, homeDir, env = {}, runtimeRoot 
       "/Applications/Dasbrowser.app/Contents/MacOS/Dasbrowser",
     );
   } else if (platform === "win32") {
-    const local = env.LOCALAPPDATA || path.join(homeDir, "AppData", "Local");
-    for (const root of [local, env.ProgramFiles, env["ProgramFiles(x86)"], path.join(runtimeRoot, "data")].filter(Boolean)) {
+    for (const root of windowsDasbrowserRoots({ homeDir, env, runtimeRoot })) {
       candidates.push(
         path.join(root, "Dasbrowser", "Application", "dasbrowser.exe"),
         path.join(root, "Dasbrowser", "dasbrowser.exe"),
@@ -47,6 +51,52 @@ function dasbrowserRuntimeCandidates({ platform, homeDir, env = {}, runtimeRoot 
     }
   }
   return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
+}
+
+function formatExitCode(code) {
+  if (!Number.isInteger(code)) return "unknown";
+  // Windows setups report HRESULT-style failures; the hex form is the one
+  // that can be looked up.
+  return Math.abs(code) > 255 ? `${code} (0x${(code >>> 0).toString(16).toUpperCase().padStart(8, "0")})` : String(code);
+}
+
+function formatDuration(durationMs) {
+  return Number.isFinite(durationMs) ? `${Math.max(0, Math.round(durationMs / 1_000))} s` : "an unknown time";
+}
+
+// DasbrowserSetup.exe is the Chromium updater's metainstaller. A per-user
+// install (the default for a non-elevated app) logs every step here.
+function windowsSetupLog({ homeDir, env = {} }) {
+  return path.join(env.LOCALAPPDATA || path.join(homeDir, "AppData", "Local"), "Dasbrowser", "DasbrowserUpdater", "updater.log");
+}
+
+/**
+ * Explains a DasbrowserSetup.exe run that did not succeed. The setup writes
+ * nothing to stdout or stderr, so its exit code is the only evidence the app
+ * gets, and it must reach the user instead of a bare "installation failed".
+ */
+function dasbrowserSetupFailureMessage({ exitCode, durationMs, output = "", homeDir, env = {} } = {}) {
+  const detail = String(output || "").split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+  // runCommand reports a timeout or a cancel as exit code -1 with the reason.
+  const summary = exitCode === -1 && detail
+    ? `DasBrowser setup did not finish after ${formatDuration(durationMs)}: ${detail.replace(/[.\s]+$/, "")}.`
+    : `DasBrowser setup failed with exit code ${formatExitCode(exitCode)} after ${formatDuration(durationMs)}.${detail ? ` ${detail}` : ""}`;
+  return `${summary} DasBrowser's setup log: ${windowsSetupLog({ homeDir, env })}`;
+}
+
+/**
+ * Explains a finished install whose browser is in none of the locations the
+ * app checks: what the setup reported, and where the app looked.
+ */
+function dasbrowserNotFoundMessage({ platform, homeDir, env = {}, runtimeRoot, setup } = {}) {
+  const finished = setup
+    ? `DasBrowser setup finished with exit code ${formatExitCode(setup.exitCode)} after ${formatDuration(setup.durationMs)}, but its browser was not found.`
+    : "DasBrowser was installed, but its browser was not found.";
+  if (platform !== "win32") {
+    return `${finished} Looked in: ${dasbrowserRuntimeCandidates({ platform, homeDir, env, runtimeRoot }).join("; ")}.`;
+  }
+  const override = env.DASBROWSER_BIN ? ` DASBROWSER_BIN points to ${path.resolve(env.DASBROWSER_BIN)}.` : "";
+  return `${finished} Looked for ${path.join("Dasbrowser", "Application", "chrome.exe")} and dasbrowser.exe under: ${windowsDasbrowserRoots({ homeDir, env, runtimeRoot }).join("; ")}.${override} DasBrowser's setup log: ${windowsSetupLog({ homeDir, env })}`;
 }
 
 function resolveDasbrowserRuntime(options) {
@@ -135,8 +185,10 @@ module.exports = {
   DASBROWSER_DOWNLOADS,
   adaptDasbrowserArgs,
   dasbrowserAppCopyOptions,
+  dasbrowserNotFoundMessage,
   dasbrowserReleaseVersion,
   dasbrowserRuntimeCandidates,
+  dasbrowserSetupFailureMessage,
   installedDasbrowserReleaseVersion,
   officialDasbrowserURLFromHTML,
   requestedBrowserRuntime,

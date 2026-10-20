@@ -238,3 +238,21 @@ it("stops and reports a failed verified startup without retries or opening a sit
   expect(commands().map(args => args[4])).toEqual(["start", "stop"]);
   expect(onVerificationFailure).toHaveBeenCalledWith(expect.objectContaining({ attempts: 1, proxyExpected: true, failedSurfaces: ["proxy", "timezone"] }));
 });
+
+it("reports a browser runtime the app could not install instead of a failed proxy check", async () => {
+  // The app host throws before nextctl runs when DasBrowser cannot be
+  // installed; no browser started, so the verification dialog must not open.
+  const hostError = new Error("Error invoking remote method 'nextbrowser:invoke': Error: DasBrowser setup failed with exit code 1 after 3 s.");
+  nextctl.run.mockImplementation(async (args: string[]) => {
+    if (args.includes("start")) throw hostError;
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const onVerificationFailure = vi.fn().mockResolvedValue("cancel");
+  for (const startupVerifies of [true, false]) {
+    nextctl.run.mockClear();
+    await expect(prepareSession({ ...options, runtime: "dasbrowser", statuses: {}, startupVerifies, onVerificationFailure }))
+      .rejects.toThrow("DasBrowser setup failed with exit code 1 after 3 s.");
+    expect(commands().map((args) => args[4])).toEqual(["start", "stop"]);
+  }
+  expect(onVerificationFailure).not.toHaveBeenCalled();
+});

@@ -74,8 +74,32 @@ function browserInstallArgs(runtimeRoot) {
   ];
 }
 
+// nextctl root flags that take a separate value. The renderer puts the profile
+// and runtime before the command (`--profile work --runtime dasbrowser start`),
+// so the command is the first word that is neither a flag nor a flag's value.
+const NEXTCTL_ROOT_VALUE_FLAGS = new Set([
+  "--profile", "--runtime", "--runtime-bin", "--browser-bin", "--format", "--cdp", "--proxy-safety-file",
+  "--adspower-api-base", "--adspower-api-key", "--adspower-profile-id",
+  "--multilogin-api-base", "--multilogin-launcher-base", "--multilogin-proxy-base",
+  "--multilogin-folder-id", "--multilogin-profile-id", "--multilogin-profile-name",
+]);
+
+function nextctlCommandName(args) {
+  const list = Array.isArray(args) ? args : [];
+  for (let index = 0; index < list.length; index += 1) {
+    const arg = String(list[index] ?? "");
+    if (arg === "--") return "";
+    if (arg.startsWith("-")) {
+      if (!arg.includes("=") && NEXTCTL_ROOT_VALUE_FLAGS.has(arg)) index += 1;
+      continue;
+    }
+    return arg.toLowerCase();
+  }
+  return "";
+}
+
 function requiresBrowserRuntime(args) {
-  return ["start", "setup", "launch", "rotate"].includes(String(args?.[0] || "").toLowerCase());
+  return ["start", "setup", "launch", "rotate"].includes(nextctlCommandName(args));
 }
 
 module.exports = {

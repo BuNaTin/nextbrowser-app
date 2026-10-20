@@ -6,7 +6,9 @@ const test = require("node:test");
 const {
   adaptDasbrowserArgs,
   dasbrowserAppCopyOptions,
+  dasbrowserNotFoundMessage,
   dasbrowserReleaseVersion,
+  dasbrowserSetupFailureMessage,
   installedDasbrowserReleaseVersion,
   officialDasbrowserURLFromHTML,
   requestedBrowserRuntime,
@@ -40,6 +42,48 @@ test("detects DasBrowser installed by the current Windows setup as chrome.exe", 
     resolveDasbrowserRuntime({ platform: "win32", homeDir: root, env: { LOCALAPPDATA: local }, runtimeRoot: path.join(root, "runtime") }),
     path.resolve(executable),
   );
+});
+
+test("says what the Windows setup reported and where the app looked when no browser appears", () => {
+  const home = path.join(path.sep, "Users", "tomasz");
+  const local = path.join(home, "AppData", "Local");
+  const env = { LOCALAPPDATA: local, ProgramFiles: path.join(path.sep, "Program Files"), "ProgramFiles(x86)": path.join(path.sep, "Program Files (x86)") };
+  const runtimeRoot = path.join(home, "AppData", "Roaming", "NextBrowser", "runtime");
+  const message = dasbrowserNotFoundMessage({ platform: "win32", homeDir: home, env, runtimeRoot, setup: { exitCode: 0, durationMs: 14_187 } });
+  assert.match(message, /^DasBrowser setup finished with exit code 0 after 14 s, but its browser was not found\./);
+  assert.ok(message.includes(path.join("Dasbrowser", "Application", "chrome.exe")), message);
+  for (const root of [local, env.ProgramFiles, env["ProgramFiles(x86)"], path.join(runtimeRoot, "data")]) assert.ok(message.includes(root), `${root} missing from: ${message}`);
+  assert.ok(message.includes(path.join(local, "Dasbrowser", "DasbrowserUpdater", "updater.log")), message);
+  // The exit code and the verdict lead, so the 240-character Settings summary keeps them.
+  assert.ok(message.indexOf("not found") < 120);
+
+  const pinned = dasbrowserNotFoundMessage({ platform: "win32", homeDir: home, env: { ...env, DASBROWSER_BIN: path.join(path.sep, "tools", "das.exe") }, runtimeRoot });
+  assert.match(pinned, /^DasBrowser was installed, but its browser was not found\./);
+  assert.ok(pinned.includes(`DASBROWSER_BIN points to ${path.resolve(path.sep, "tools", "das.exe")}`), pinned);
+});
+
+test("lists the macOS locations the app checked", () => {
+  const message = dasbrowserNotFoundMessage({ platform: "darwin", homeDir: "/Users/tomasz", env: {}, runtimeRoot: "/Users/tomasz/.nextbrowser" });
+  assert.ok(message.includes("/Users/tomasz/.nextbrowser/data/Dasbrowser.app/Contents/MacOS/Dasbrowser"), message);
+  assert.ok(message.includes("/Applications/Dasbrowser.app/Contents/MacOS/Dasbrowser"), message);
+});
+
+test("reports the Windows setup exit code instead of a bare installation failure", () => {
+  const home = path.join(path.sep, "Users", "tomasz");
+  const env = { LOCALAPPDATA: path.join(home, "AppData", "Local") };
+  const log = path.join(env.LOCALAPPDATA, "Dasbrowser", "DasbrowserUpdater", "updater.log");
+  assert.equal(
+    dasbrowserSetupFailureMessage({ exitCode: 2147942405, durationMs: 3_400, output: "", homeDir: home, env }),
+    `DasBrowser setup failed with exit code 2147942405 (0x80070005) after 3 s. DasBrowser's setup log: ${log}`,
+  );
+  assert.match(dasbrowserSetupFailureMessage({ exitCode: -2147024891, durationMs: 0, homeDir: home, env }), /exit code -2147024891 \(0x80070005\)/);
+  assert.match(dasbrowserSetupFailureMessage({ exitCode: 1, durationMs: 61_000, output: "\n  Unexpected error\nmore\n", homeDir: home, env }), /^DasBrowser setup failed with exit code 1 after 61 s\. Unexpected error DasBrowser's/);
+  assert.match(
+    dasbrowserSetupFailureMessage({ exitCode: -1, durationMs: 600_000, output: "Command timed out after 600 seconds.", homeDir: home, env }),
+    /^DasBrowser setup did not finish after 600 s: Command timed out after 600 seconds\. /,
+  );
+  // Without LOCALAPPDATA the log is still named from the home folder.
+  assert.ok(dasbrowserSetupFailureMessage({ exitCode: 3, homeDir: home, env: {} }).endsWith(log));
 });
 
 test("reads the installed DasBrowser release next to the Windows launcher", async (t) => {

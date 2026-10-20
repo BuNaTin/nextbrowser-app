@@ -61,8 +61,18 @@ async function activateMatchingTab(args: string[], host: string): Promise<boolea
   return true;
 }
 
+/** The app host failed the command before nextctl ran it, for example while
+ *  installing the browser runtime. No browser started, so nothing was verified. */
+class HostCommandError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
 async function runChecked(args: string[], message: string, requestId?: string): Promise<void> {
-  const result = await nextctlRun(args, {}, requestId ? { requestId } : {});
+  const result = await nextctlRun(args, {}, requestId ? { requestId } : {}).catch((error: unknown) => {
+    throw new HostCommandError(error);
+  });
   let envelopeFailed = false;
   try {
     const envelope = JSON.parse(result.stdout) as { ok?: boolean; error?: unknown };
@@ -248,6 +258,9 @@ export async function prepareSession(opts: {
       await stop();
       running = false;
       checkCancelled();
+      // A host failure (such as a browser runtime that could not be installed)
+      // is not a failed proxy check: report it as is, without retries.
+      if (error instanceof HostCommandError) throw error;
       if (proxyExpected && !opts.startupVerifies && attempt < 2) step("Restarting the profile with the same proxy");
     }
   }

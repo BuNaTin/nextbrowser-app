@@ -1,3 +1,5 @@
+import { recordUiAction } from "./errorReporting";
+
 type AnalyticsParams = Record<string, string | number | boolean | null | undefined>;
 
 declare global {
@@ -246,6 +248,8 @@ export function setAnalyticsUserId(userId: string | undefined): void {
 }
 
 export function trackEvent(name: string, params: AnalyticsParams = {}): void {
+  // Analytics event names double as the UI breadcrumbs of error reports.
+  if (name !== "screen_view" && name !== "page_view") recordUiAction(name);
   if (!MEASUREMENT_ID) return;
   initAnalytics();
   sendAnalyticsEvent(name, eventParams(params));

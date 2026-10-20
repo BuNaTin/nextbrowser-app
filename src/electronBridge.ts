@@ -1,7 +1,12 @@
+import type { RendererErrorReport } from "./lib/errorReporting";
+
 export interface NextBrowserBridge {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   filePathForFile?(file: File): string;
   on(channel: string, listener: (payload: unknown) => void): () => void;
+  // Optional: older preload scripts and browser previews have no reporter.
+  reportError?(event: RendererErrorReport): void;
+  breadcrumb?(crumb: { category: "navigation" | "ui"; message: string }): void;
 }
 
 declare global {

@@ -17,6 +17,14 @@ export function internalError(action: string, code: string): string {
   return `${context} Ref: ${errorReference(safeCode)}`;
 }
 
+/**
+ * Cloud project sync is best-effort. Its authentication failures are not app
+ * errors: they neither cover the active chat nor become error reports.
+ */
+export function isBackgroundSyncFailure(detail: string): boolean {
+  return /project sync failed\s*\(\d+\)|unauthorized.*project/i.test(detail);
+}
+
 export function needsSupportLink(message: string): boolean {
   return /\bRef: NB-[A-F0-9]{8}\b/.test(message);
 }

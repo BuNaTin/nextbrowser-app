@@ -42,6 +42,25 @@ The desktop build enables its configured GA4 stream by default. Events include a
 
 Override the measurement stream for a special build with <code>VITE_GA4_MEASUREMENT_ID</code>. A blank value disables collection for that build.
 
+## Error reports
+
+When something breaks, the desktop app sends an error report to the Nextbrowser backend (<code>POST /v1/client-errors</code> on the same API base as browser-runtime calls, <code>api.nextbrowser.com</code> by default). The request is signed with the connected account's key when there is one and is anonymous otherwise.
+
+A report contains what failed (error name, message, stack, nbc error code, or HTTP status), the screen and action it happened in, the app and nbc versions, the operating system, a per-launch session id, a random install id, and the last 30 breadcrumbs: screens, IPC command names, backend calls (method, host, path, status), nbc command names with their exit status, and UI action names. Every backend request carries a W3C <code>traceparent</code> header, so a failed call is reported with the trace id of the matching server trace, and <code>X-Client-Name</code>/<code>X-Client-Version</code>, so the backend's request log names the app version that made the call.
+
+Reports are scrubbed before they are stored: the home directory becomes <code>~</code>, URLs lose their query, fragment, and credentials, and emails, bearer tokens, account keys, and API keys are removed. Reports never include page contents, prompts, typed text, cookies, proxy credentials, nbc output, or nbc command arguments.
+
+What is reported:
+
+- renderer exceptions, unhandled promise rejections, and React render errors;
+- main-process exceptions and unhandled rejections, crashed or unresponsive app processes;
+- backend calls that fail on the network or return a 5xx status (4xx responses are breadcrumbs only);
+- nbc calls that crash, cannot start, return no JSON when JSON was requested, or fail with an error code that means nbc or a backend broke. Outcomes the app already explains to the user — invalid input, missing profiles, sign-in, proxy checks, traffic limits, site-flow results, an offline computer, cancellations, and timeouts — are breadcrumbs only.
+
+Repeats of the same error are folded into one report with a count. A launch sends at most 200 reports, and at most 20 for one error.
+
+Turn reports off with **Settings → Send error reports**. <code>NEXTBROWSER_ERROR_REPORTING=0</code> disables them in any build; development and unpackaged builds send nothing unless <code>NEXTBROWSER_ERROR_REPORTING=1</code>. Unsent reports wait in <code>client-errors/</code> in the application-data directory (at most 200, for up to seven days), and the reporter's own failures are logged to <code>client-errors/reporter.log</code> there.
+
 ## Development
 
 Install dependencies and start the Electron/Vite development process:

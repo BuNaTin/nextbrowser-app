@@ -52,6 +52,8 @@ function runCommand(file, args, options = {}) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let spawnError = false;
+    let exitSignal = null;
     let exitTimer;
     let timeoutTimer;
     const append = (current, chunk) => {
@@ -70,12 +72,21 @@ function runCommand(file, args, options = {}) {
       let detail = errorMessage || stderr;
       if (active.timedOut && timeoutMs) detail = `Command timed out after ${Math.ceil(timeoutMs / 1_000)} seconds.`;
       else if (active.cancelled) detail = detail || "Command cancelled.";
+      // The result shape is unchanged; how the process ended goes to an
+      // optional observer (error reporting tells a cancel from a crash).
+      try {
+        options.onSettled?.({ cancelled: active.cancelled && !active.timedOut, timedOut: active.timedOut, spawnError, signal: exitSignal });
+      } catch { /* an observer must not affect the command */ }
       resolve({ stdout, stderr: detail, code: active.cancelled || active.timedOut ? -1 : code });
     };
     child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
-    child.once("error", (error) => finish(-1, error.message));
-    child.once("exit", (code) => {
+    child.once("error", (error) => {
+      spawnError = true;
+      finish(-1, error.message);
+    });
+    child.once("exit", (code, signal) => {
+      exitSignal = signal || null;
       // Detached browser/streaming children may inherit stdout. Waiting for
       // their pipes to close leaves an already-finished profile launch stuck
       // on Starting, so drain only the direct child's final output briefly.

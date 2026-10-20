@@ -1,4 +1,5 @@
 const { loadBackendConfig } = require("./proxy-traffic.cjs");
+const { tracedBackendFetch } = require("./backend-fetch.cjs");
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_REPO_URL = "https://github.com/nextbrowser-oss/nextbrowser-app";
@@ -23,7 +24,7 @@ function normalizeGitHubStarStatus(body) {
 }
 
 async function githubStarRequest(route, method, deps = {}) {
-  const fetchImpl = deps.fetchImpl || fetch;
+  const fetchImpl = tracedBackendFetch(deps.fetchImpl);
   const { apiKey, baseURL } = await loadBackendConfig(deps);
   let response;
   try {

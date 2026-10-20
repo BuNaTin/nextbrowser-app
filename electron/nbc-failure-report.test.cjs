@@ -19,7 +19,8 @@ test("command names keep the command words and never the arguments", () => {
   assert.equal(nbcCommandName(["profiles", "requests", "approve", "req-123", "--format", "json"]), "profiles requests approve");
   assert.equal(nbcCommandName(["eval", "--profile", "p", "document.cookie"]), "eval");
   assert.equal(nbcCommandName(["https://example.com/?q=1"]), "unknown");
-  assert.equal(nbcCommandName(["--version"]), "(none)");
+  assert.equal(nbcCommandName(["--version"]), "--version");
+  assert.equal(nbcCommandName([]), "(none)");
   assert.equal(expectsJSON(["status", "--format", "json"]), true);
   assert.equal(expectsJSON(["profiles", "list", "--json"]), true);
   assert.equal(expectsJSON(["--help"]), false);
@@ -41,6 +42,12 @@ test("expected outcomes the UI explains are not reported", () => {
   assert.equal(proxyLaunch.event, null, "a proxy that refuses the launch is the profile's configuration");
   const signedOut = describeNbcResult({ args: ["start", "--format", "json"], result: { code: 1, stdout: envelope("REMOTE_BACKEND_ERROR", "backend returned 401 Unauthorized"), stderr: "" } });
   assert.equal(signedOut.event, null);
+  const offline = describeNbcResult({ args: ["start", "--format", "json"], result: { code: 1, stdout: envelope("VERIFY_UNAVAILABLE", "dial tcp: lookup api.nextbrowser.com: no such host"), stderr: "" } });
+  assert.equal(offline.event, null, "an offline machine is not an nbc defect");
+  const closedBrowser = describeNbcResult({ args: ["tabs", "--profile", "p", "--format", "json"], result: { code: 1, stdout: envelope("CDP_UNREACHABLE"), stderr: "" } });
+  assert.equal(closedBrowser.event, null, "a browser the user closed");
+  const startUnreachable = describeNbcResult({ args: ["start", "--profile", "p", "--format", "json"], result: { code: 1, stdout: envelope("CDP_UNREACHABLE"), stderr: "" } });
+  assert.equal(startUnreachable.event.name, "CDP_UNREACHABLE", "a start that cannot reach its own browser is reported");
 });
 
 test("cancellations, timeouts and usage probes are not reported", () => {

@@ -75,7 +75,11 @@ function utf8(value, maxBytes) {
 
 function cleanString(value, maxBytes, scrub) {
   if (value == null) return "";
-  const text = scrub(typeof value === "string" ? value : String(value)).trim();
+  let raw = typeof value === "string" ? value : String(value);
+  // Scrub a bounded slice: a runaway message must not stall the main process.
+  // The margin keeps the cut far beyond what survives the final truncation.
+  if (raw.length > maxBytes * 4) raw = raw.slice(0, maxBytes * 4);
+  const text = scrub(raw).trim();
   return text ? utf8(text, maxBytes) : "";
 }
 
@@ -113,7 +117,8 @@ function createBreadcrumbTrail({ now, scrub, limit = LIMITS.breadcrumbs }) {
   return {
     add(category, message) {
       if (!BREADCRUMB_CATEGORIES.has(category)) return;
-      const text = cleanString(message, LIMITS.breadcrumbMessage - 8, scrub);
+      // Room for the " (×N)" repeat suffix.
+      const text = cleanString(message, LIMITS.breadcrumbMessage - 16, scrub);
       if (!text) return;
       const at = new Date(now()).toISOString();
       const last = items[items.length - 1];

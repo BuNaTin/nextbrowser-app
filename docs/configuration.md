@@ -55,7 +55,7 @@ What is reported:
 - renderer exceptions, unhandled promise rejections, and React render errors;
 - main-process exceptions and unhandled rejections, crashed or unresponsive app processes;
 - backend calls that fail on the network or return a 5xx status (4xx responses are breadcrumbs only);
-- nbc calls that crash, cannot start, return no JSON when JSON was requested, or fail with an error code that means nbc or a backend broke. Outcomes the app already explains to the user — invalid input, missing profiles, sign-in, proxy checks, traffic limits, site-flow results, cancellations, and timeouts — are breadcrumbs only.
+- nbc calls that crash, cannot start, return no JSON when JSON was requested, or fail with an error code that means nbc or a backend broke. Outcomes the app already explains to the user — invalid input, missing profiles, sign-in, proxy checks, traffic limits, site-flow results, an offline computer, cancellations, and timeouts — are breadcrumbs only.
 
 Repeats of the same error are folded into one report with a count. A launch sends at most 200 reports, and at most 20 for one error.
 

@@ -6,7 +6,8 @@ const { parseNextctlEnvelope } = require("./profile-start-failure.cjs");
 // backend broke (INTERNAL_ERROR, IO_ERROR, LAUNCH_FAILED, ... or any code this
 // list does not know). Outcomes the user can act on are expected and only
 // become breadcrumbs: bad input, missing profiles, sign-in, proxy checks,
-// traffic limits, site-flow results, cancellations and timeouts.
+// traffic limits, site-flow results, an offline machine, a browser the user
+// closed (CDP_UNREACHABLE outside start), cancellations and timeouts.
 // Standard output is never copied into a report: it can hold page data.
 
 const EXPECTED_CODES = new Set([
@@ -42,6 +43,8 @@ const EXPECTED_CODE_PATTERN = /^(?:REDDIT|X|LINKEDIN|INSTAGRAM|TIKTOK|FACEBOOK)_
 // A launch that failed because of the profile's own proxy is explained to the
 // user (see profile-start-failure.cjs) and is not an nbc defect.
 const EXPECTED_DETAIL = /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|Proxy country is [A-Za-z]{2,}, expected|proxy[^.\n]*(?:refused|unreachable|authentication|\b407\b)|runtime update is being installed/i;
+// A machine without network or DNS is the user's environment, not nbc.
+const OFFLINE_DETAIL = /no such host|ENOTFOUND|EAI_AGAIN|ENETUNREACH|network is unreachable|getaddrinfo/i;
 // Cobra usage errors are how the app probes older nbc builds for a flag.
 const USAGE_ERROR = /\bunknown (?:flag|shorthand flag|command)\b|\baccepts \d+ arg|\brequires at least \d+ arg|\binvalid argument ".*" for "/i;
 const GO_CRASH = /^panic: |^fatal error: |^goroutine \d+ \[/m;
@@ -83,7 +86,11 @@ function positionals(args) {
 function nbcCommandName(args) {
   const words = positionals(args);
   const top = words[0]?.value || "";
-  if (!/^[a-z][a-z0-9-]{0,31}$/.test(top)) return top ? "unknown" : "(none)";
+  if (!top) {
+    const probe = (Array.isArray(args) ? args.map(String) : []).find((arg) => arg === "--help" || arg === "--version");
+    return probe || "(none)";
+  }
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(top)) return "unknown";
   const name = [top];
   for (const word of words.slice(1)) {
     if (name.length >= 3 || !SUBCOMMANDS.has(word.value)) break;
@@ -106,7 +113,10 @@ function expectsJSON(args) {
   return list.includes("--json") || flagValue(list, "--format") === "json";
 }
 
-function expectedCode(code) {
+function expectedCode(code, command) {
+  // A browser the user closed is unreachable to every later command; only a
+  // start that cannot reach the browser it just launched is a failure.
+  if (code === "CDP_UNREACHABLE") return command !== "start";
   return EXPECTED_CODES.has(code) || EXPECTED_CODE_PATTERN.test(code);
 }
 
@@ -163,7 +173,7 @@ function describeNbcResult({ args, result, outcome = {}, durationMs }) {
   if (nbcCode) {
     const message = String(error.message || "").trim();
     const detail = [message, String(error.hint || ""), stderr].join("\n");
-    if (expectedCode(nbcCode) || EXPECTED_DETAIL.test(detail)) return { breadcrumb: `${breadcrumb} ${nbcCode}`, event: null };
+    if (expectedCode(nbcCode, command) || EXPECTED_DETAIL.test(detail) || OFFLINE_DETAIL.test(detail)) return { breadcrumb: `${breadcrumb} ${nbcCode}`, event: null };
     if (nbcCode === "REMOTE_BACKEND_ERROR" && /\b40[13]\b|unauthori[sz]ed|forbidden|API key/i.test(detail)) return { breadcrumb: `${breadcrumb} ${nbcCode}`, event: null };
     return {
       breadcrumb: `${breadcrumb} ${nbcCode}`,

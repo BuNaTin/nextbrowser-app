@@ -370,3 +370,12 @@ test("Retry-After accepts seconds and HTTP dates", () => {
   assert.equal(parseRetryAfter("Tue, 20 Oct 2026 10:01:00 GMT", now), 60_000);
   assert.equal(parseRetryAfter("", now), undefined);
 });
+
+test("a runaway message is bounded before it is scrubbed", async (t) => {
+  const h = harness(t);
+  const started = Date.now();
+  h.reporter.capture({ source: "main", kind: "exception", name: "Error", message: `${"a".repeat(5_000_000)} token=secret`, stack: "x@y".repeat(2_000_000) });
+  assert.ok(Date.now() - started < 2_000, "capture stays fast");
+  await h.reporter.flush();
+  assertContract(h.requests[0].body);
+});

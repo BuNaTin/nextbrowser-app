@@ -8,9 +8,17 @@ const { apiRoute } = require("./client-error-scrub.cjs");
 // services (GitHub, Multilogin, downloads) are deliberately not traced.
 
 let observer = null;
+// Who is calling, so the backend's request log names the app and its version.
+let clientHeaders = {};
 
 function setBackendRequestObserver(fn) {
   observer = typeof fn === "function" ? fn : null;
+}
+
+function setBackendClientInfo({ name, version } = {}) {
+  clientHeaders = {};
+  if (name) clientHeaders["x-client-name"] = String(name);
+  if (version) clientHeaders["x-client-version"] = String(version);
 }
 
 function newTraceContext(random = randomBytes) {
@@ -25,10 +33,13 @@ function newTraceContext(random = randomBytes) {
 function withTraceparent(headers, traceparent) {
   if (headers && typeof headers.set === "function" && typeof headers.entries === "function") {
     const next = new Headers(headers);
+    for (const [name, value] of Object.entries(clientHeaders)) {
+      if (!next.has(name)) next.set(name, value);
+    }
     next.set("traceparent", traceparent);
     return next;
   }
-  return { ...(headers || {}), traceparent };
+  return { ...clientHeaders, ...(headers || {}), traceparent };
 }
 
 function responseHeader(response, name) {
@@ -119,6 +130,7 @@ function describeBackendRequest({ url, method, status, error, traceId, responseT
 module.exports = {
   describeBackendRequest,
   newTraceContext,
+  setBackendClientInfo,
   setBackendRequestObserver,
   tracedBackendFetch,
   withTraceparent,

@@ -3,7 +3,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { describeBackendRequest, newTraceContext, setBackendRequestObserver, tracedBackendFetch } = require("./backend-fetch.cjs");
+const { describeBackendRequest, newTraceContext, setBackendClientInfo, setBackendRequestObserver, tracedBackendFetch } = require("./backend-fetch.cjs");
 const { listProjects } = require("./project-sync.cjs");
 
 const TRACEPARENT = /^00-([0-9a-f]{32})-([0-9a-f]{16})-01$/;
@@ -108,4 +108,22 @@ test("project sync requests carry a traceparent", async (t) => {
   await listProjects({ env: { NEXTBROWSER_CONFIG_DIR: root, CLAWCTL_SKILL_SERVICE: "https://core.test" }, fetchImpl });
   assert.match(calls[0].headers.traceparent, TRACEPARENT);
   assert.equal(calls[0].headers.authorization, "Bearer secret");
+});
+
+test("names the app and its version unless the caller already did", async (t) => {
+  setBackendClientInfo({ name: "nextbrowser-app", version: "0.2.68" });
+  t.after(() => setBackendClientInfo({}));
+  const calls = [];
+  const traced = tracedBackendFetch(async (url, init) => {
+    calls.push(init.headers);
+    return response(200);
+  });
+  await traced("https://core.test/v1/projects", { headers: { authorization: "Bearer k" } });
+  await traced("https://core.test/v1/projects", { headers: new Headers({ "x-client-name": "nbc" }) });
+  assert.equal(calls[0]["x-client-name"], "nextbrowser-app");
+  assert.equal(calls[0]["x-client-version"], "0.2.68");
+  assert.equal(calls[0].authorization, "Bearer k");
+  assert.equal(calls[1].get("x-client-name"), "nbc");
+  assert.equal(calls[1].get("x-client-version"), "0.2.68");
+  assert.match(calls[1].get("traceparent"), TRACEPARENT);
 });

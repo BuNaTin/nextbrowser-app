@@ -128,7 +128,7 @@ const {
 } = require("./dasbrowser-runtime.cjs");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const { createClientErrorReporter, errorReportingAllowed } = require("./client-error-reporter.cjs");
-const { describeBackendRequest, setBackendRequestObserver, tracedBackendFetch } = require("./backend-fetch.cjs");
+const { describeBackendRequest, setBackendClientInfo, setBackendRequestObserver, tracedBackendFetch } = require("./backend-fetch.cjs");
 const { describeNbcResult, isNextctlBinary } = require("./nbc-failure-report.cjs");
 
 const children = new Map();
@@ -202,6 +202,7 @@ const errorReporter = createClientErrorReporter({
   getAction: () => reportingContext.getStore()?.action,
 });
 const backendFetch = tracedBackendFetch();
+setBackendClientInfo({ name: "nextbrowser-app", version: app.getVersion() });
 setBackendRequestObserver((request) => {
   const { breadcrumb, event } = describeBackendRequest(request);
   errorReporter.breadcrumb("api", breadcrumb);

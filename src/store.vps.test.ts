@@ -686,6 +686,26 @@ describe("VPS execution target isolation", () => {
     });
   });
 
+  it("passes the task typed on a skill card into the local agent prompt", async () => {
+    const local = conversation("local", "local");
+    useStore.setState({
+      conversations: [local],
+      activeConvId: { codex: local.id },
+      applySkill: vi.fn().mockResolvedValue({ found: true, slug: "keeper-autofill-login" }),
+      loadDefaultSession: vi.fn().mockResolvedValue(undefined),
+    });
+    preflight.prepareSession.mockResolvedValue({ profileArgs: [], host: undefined });
+
+    await useStore.getState().useSkillInChat(
+      skillEntry({ title: "Keeper", selector: { kind: "current_tab", value: "current tab" }, instructions: "# Keeper\nFill the form." }),
+      "Fill in the login form, but don't submit it.",
+    );
+
+    const prompt = useStore.getState().runtime.codex.queue.at(-1)?.rawText ?? "";
+    expect(prompt).toContain("Task for this run:\nFill in the login form, but don't submit it.");
+    expect(prompt.indexOf("Task for this run")).toBeLessThan(prompt.indexOf("# Keeper"));
+  });
+
   it("queues a VPS JavaScript catalog entry without local evaluation or preflight", async () => {
     const remote = conversation("remote", "vps");
     useStore.setState({ conversations: [remote], activeConvId: { codex: remote.id } });

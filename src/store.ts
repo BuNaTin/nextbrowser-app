@@ -32,6 +32,7 @@ import {
 import { REPOSITORY_SKILL_CATEGORIES, mergeSkillCategories } from "./repositorySkills";
 import { cliBrowser } from "./lib/xreply/browser";
 import { signInDone } from "./lib/signInPage";
+import { isSharedCopy, sharedScriptBlock } from "./lib/sharedAutomation";
 import { openNotifications, readPublisher, runPass, subscribeHandle } from "./lib/xreply/engine";
 import { errorText as xReplyErrorText, setXReplyLogSink, xlog } from "./lib/xreply/log";
 import { emptyXReplyState, normalizeXReplyState, type XReplyState } from "./lib/xreply/state";
@@ -7659,6 +7660,8 @@ export const useStore = create<State>((set, get) => {
 
   runAutomationRecipe: async (skill, executionId, parameters = {}) => {
     const { backendRunId, ...recipeParameters } = parameters;
+    const sharedBlock = sharedScriptBlock(skill);
+    if (sharedBlock) throw new Error(sharedBlock);
     const activeConversation = get().activeConversation();
     if (activeConversation?.executionTarget === "vps") {
       throw new Error("Deterministic replay currently requires a local Nextbrowser profile.");
@@ -7683,6 +7686,8 @@ export const useStore = create<State>((set, get) => {
     const executeRecipe = () => invoke<AutomationRecipeResult>("automation_recipe_execute", {
       executionId,
       recipe: { ...skill.recipe, actions: skill.actions },
+      sharedCopy: isSharedCopy(skill),
+      sourceId: skill.id,
       parameters: { task: skill.task, ...recipeParameters },
       profile,
       runtime,
@@ -7719,6 +7724,10 @@ export const useStore = create<State>((set, get) => {
     if (!get().agentReady()) return;
     const task = taskOverride?.trim() || skill.task.trim();
     if (!task) return;
+    // The agent would run the shared script itself, so the block applies here
+    // as well as to the deterministic replay.
+    const sharedBlock = sharedScriptBlock(skill);
+    if (sharedBlock) throw new Error(sharedBlock);
     set({ tab: "chat" });
     const cid = get().activeConversation()?.id ?? get().newChat();
     const remoteOnly = get().conversations.find((conversation) => conversation.id === cid)?.executionTarget === "vps";

@@ -1,5 +1,6 @@
 const { spawn } = require("node:child_process");
 const { assertArtifactDataContract } = require("./automation-artifact.cjs");
+const { sharedCopyMarker, sharedScriptBlock } = require("./automation-shared-copies.cjs");
 
 const MAX_ACTIONS = 100;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -470,7 +471,10 @@ async function executeAutomationRecipe(input, deps) {
   if (activeExecutions.has(executionId)) throw new Error("This automation execution is already running.");
   // Resolve every input before launching the browser. Discovering a missing
   // value halfway through a workflow can leave forms or pages half-mutated.
-  const actions = validateRecipe(input.recipe).map((action, index) => {
+  const validated = validateRecipe(input.recipe);
+  const blocked = sharedScriptBlock({ sharedCopy: input.sharedCopy === true || !!sharedCopyMarker(input.recipe), actions: validated });
+  if (blocked) throw new Error(blocked);
+  const actions = validated.map((action, index) => {
     const expanded = { ...action, arguments: expandTemplates(action.arguments, input.parameters || {}) };
     const missing = unresolvedTemplate(expanded.arguments);
     if (missing) throw new Error(`Step ${index + 1} needs a value for “${missing}” before this automation can run.`);

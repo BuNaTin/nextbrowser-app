@@ -91,6 +91,7 @@ const {
   updateAutomationRunStep,
 } = require("./automation-sync.cjs");
 const { cancelAllAutomationRecipes, cancelAutomationRecipe, executeAutomationRecipe } = require("./automation-runner.cjs");
+const { annotateRecording, annotateWorkflow, createSharedCopyRegistry, markSharedCopyOnServer } = require("./automation-shared-copies.cjs");
 const { cancelAllAutomationElementPicks, cancelAutomationElementPick, pickAutomationElement } = require("./automation-element-picker.cjs");
 const { activeAutomationRecordingHasDataAction, activeAutomationTraceFile, attachAutomationPageRecording, cancelAllAutomationPageRecordings, recordAutomationToolAction, startAutomationPageRecording, stopAutomationPageRecording } = require("./automation-page-recorder.cjs");
 const { browserInstallArgs, requiresBrowserRuntime, resolveBrowserRuntime } = require("./browser-runtime.cjs");
@@ -981,6 +982,24 @@ let githubStarsSource;
 function requestGitHubStars(options) {
   if (!githubStarsSource) githubStarsSource = createGitHubStarsSource({ cachePath: githubStarsCachePath() });
   return githubStarsSource.get(options);
+}
+let sharedCopyRegistry = null;
+function sharedAutomationCopies() {
+  if (!sharedCopyRegistry) sharedCopyRegistry = createSharedCopyRegistry(path.join(dataDir(), "automation-shared-copies.json"));
+  return sharedCopyRegistry;
+}
+async function acceptSharedAutomation(shareId, deps) {
+  const accepted = await acceptAutomationShare(shareId, deps);
+  // Record the copy before anything else can fail: a shared copy with its own
+  // page script must never run as if the recipient had written it.
+  sharedAutomationCopies().mark(String(accepted?.id || ""), { kind: accepted?.source_kind, shareId });
+  await markSharedCopyOnServer(accepted, shareId, {
+    listWorkflows: () => listAutomationWorkflows(deps),
+    putWorkflow: (workflow) => putAutomationWorkflow(workflow, deps),
+    listRecordings: () => listAutomationRecordings(deps),
+    putRecording: (recording) => putAutomationRecording(recording, deps),
+  }).catch((error) => console.warn("[automation] could not mark the shared copy on the server:", error?.message || error));
+  return accepted;
 }
 function localAutomationArtifacts() {
   if (!automationArtifactStore) {
@@ -2167,15 +2186,15 @@ async function invokeCommand(command, args = {}, sender) {
     case "artifact_workspace_delete": {
       return await localAutomationArtifacts().deleteWorkspace(String(args.workspaceId || ""));
     }
-    case "automation_workflows_list": return await listAutomationWorkflows({ env: childEnv() });
-    case "automation_workflow_put": return await putAutomationWorkflow(args.workflow || {}, { env: childEnv() });
+    case "automation_workflows_list": return (await listAutomationWorkflows({ env: childEnv() })).map((workflow) => annotateWorkflow(workflow, sharedAutomationCopies()));
+    case "automation_workflow_put": return annotateWorkflow(await putAutomationWorkflow(args.workflow || {}, { env: childEnv() }), sharedAutomationCopies());
     case "automation_workflow_delete": return await deleteAutomationWorkflow(String(args.id || ""), { env: childEnv() });
-    case "automation_recordings_list": return await listAutomationRecordings({ env: childEnv() });
+    case "automation_recordings_list": return (await listAutomationRecordings({ env: childEnv() })).map((recording) => annotateRecording(recording, sharedAutomationCopies()));
     case "automation_recording_put": return await putAutomationRecording(args.recording || {}, { env: childEnv() });
     case "automation_recording_delete": return await deleteAutomationRecording(String(args.id || ""), { env: childEnv() });
     case "automation_shares_list": return await listAutomationShares(String(args.box || "inbox"), { env: childEnv() });
     case "automation_share_create": return await createAutomationShare(args.share || {}, { env: childEnv() });
-    case "automation_share_accept": return await acceptAutomationShare(String(args.id || ""), { env: childEnv() });
+    case "automation_share_accept": return await acceptSharedAutomation(String(args.id || ""), { env: childEnv() });
     case "automation_share_decline": return await declineAutomationShare(String(args.id || ""), { env: childEnv() });
     case "automation_share_revoke": return await revokeAutomationShare(String(args.id || ""), { env: childEnv() });
     case "automation_runs_list": return await listAutomationRuns(String(args.workspaceId || ""), { env: childEnv() });
@@ -2198,6 +2217,7 @@ async function invokeCommand(command, args = {}, sender) {
       return await executeAutomationRecipe({
         executionId: args.executionId,
         recipe: args.recipe,
+        sharedCopy: args.sharedCopy === true || sharedAutomationCopies().has(String(args.sourceId || "")),
         parameters: args.parameters,
         profile: args.profile,
         runtime: requestedRuntime === "dasbrowser" ? "chromium" : requestedRuntime,

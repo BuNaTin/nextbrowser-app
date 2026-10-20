@@ -254,11 +254,13 @@ export interface BrowserWorkflowSkill {
   revision?: number;
   serverSlug?: string;
   submittedAt?: number;
+  /** Accepted from another account's share (set by the main process). */
+  sharedCopy?: boolean;
 }
 
 export type BrowserSkillCapability = "scrape" | "search" | "posting" | "form" | "navigation" | "other";
 export interface BrowserWorkflowAction { tool: string; arguments: Record<string, unknown>; }
-export interface BrowserWorkflowRecipe { version: 1; capability: BrowserSkillCapability; actions: BrowserWorkflowAction[]; }
+export interface BrowserWorkflowRecipe { version: 1; capability: BrowserSkillCapability; actions: BrowserWorkflowAction[]; shared_copy?: { share_id?: string; accepted_at?: string; from_recording?: string }; }
 export interface AutomationRecipeStepResult { index: number; tool: string; ok: boolean; output?: unknown; error?: string; }
 export interface AutomationRecipeResult { status: "completed" | "failed" | "cancelled"; results: AutomationRecipeStepResult[]; failedStep?: number; error?: string; }
 

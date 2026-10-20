@@ -61,3 +61,17 @@ test("installs lazily only for profile launch operations", () => {
   for (const command of ["start", "setup", "launch", "rotate"]) assert.equal(requiresBrowserRuntime([command]), true);
   for (const command of ["profiles", "status", "stop", "verify"]) assert.equal(requiresBrowserRuntime([command]), false);
 });
+
+test("finds the launch command after the profile and runtime flags the sidebar puts first", () => {
+  // Exactly what prepareSession sends for a sidebar start. Reading only args[0]
+  // ("--profile") skipped the DasBrowser install, so the runtime stayed missing.
+  assert.equal(requiresBrowserRuntime(["--profile", "work", "--runtime", "dasbrowser", "start", "--format", "json"]), true);
+  assert.equal(requiresBrowserRuntime(["--verify-on-start-only", "--profile", "work", "--runtime", "camoufox", "start"]), true);
+  assert.equal(requiresBrowserRuntime(["--profile=work", "--format=json", "rotate"]), true);
+  assert.equal(requiresBrowserRuntime(["--profile", "work", "--runtime", "dasbrowser", "stop", "--format", "json"]), false);
+  // A flag value is never mistaken for the command.
+  assert.equal(requiresBrowserRuntime(["--profile", "start", "status"]), false);
+  assert.equal(requiresBrowserRuntime(["profiles", "create", "start", "--runtime", "dasbrowser"]), false);
+  assert.equal(requiresBrowserRuntime(["--profile", "work"]), false);
+  assert.equal(requiresBrowserRuntime([]), false);
+});

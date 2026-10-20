@@ -119,7 +119,9 @@ const {
   DASBROWSER_DOWNLOADS,
   adaptDasbrowserArgs,
   dasbrowserAppCopyOptions,
+  dasbrowserNotFoundMessage,
   dasbrowserReleaseVersion,
+  dasbrowserSetupFailureMessage,
   installedDasbrowserReleaseVersion,
   officialDasbrowserURLFromHTML,
   requestedBrowserRuntime,
@@ -640,7 +642,9 @@ async function executeNextctlRaw(commandArgs, options = {}) {
       adaptedArgs = adaptDasbrowserArgs(adaptedArgs, executable);
     } else if (browserRuntime === "clawbrowser" && requiresBrowserRuntime(adaptedArgs)) {
       await ensureClawbrowserRuntime(bin, { requestId: options.requestId });
-    } else if (browserRuntime === "camoufox" && requiresBrowserRuntime(adaptedArgs)) {
+    } else if (browserRuntime === "camoufox" && requiresBrowserRuntime(adaptedArgs) && !(await installedCamoufoxVersion(nextbrowserRuntimeRoot()))) {
+      // Only the first start prepares Camoufox; starting an installed one must
+      // not show the install card.
       setBrowserRuntimeInstallStatus("camoufox", "installing", { message: "Preparing the Camoufox browser runtime…", requestId: options.requestId });
       try {
         const result = await run(bin, ["--verify-on-start-only", ...adaptedArgs], options.extraEnv || {}, options);
@@ -911,6 +915,8 @@ async function ensureDasbrowserRuntime({ force = false, reportStatus = true, req
       throw new Error("DasBrowser is currently available only for macOS and Windows.");
     }
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "nextbrowser-dasbrowser-"));
+    // What the Windows setup reported, for the error when no browser appears.
+    let setup;
     try {
       const url = await officialDasbrowserDownloadUrl({ signal: install.controller?.signal });
       if (reportStatus) setBrowserRuntimeInstallStatus("dasbrowser", "downloading", { requestId: install.id });
@@ -940,14 +946,21 @@ async function ensureDasbrowserRuntime({ force = false, reportStatus = true, req
         const installer = path.join(tempDir, "DasbrowserSetup.exe");
         await downloadFile(url, installer, { signal: install.controller?.signal });
         if (reportStatus) setBrowserRuntimeInstallStatus("dasbrowser", "installing", { requestId: install.id });
+        const setupStartedAt = Date.now();
         const installed = await run(installer, ["--silent", "--install"], {}, { requestId: install.id, timeoutMs: 10 * 60 * 1000 });
-        if (installed.code !== 0) throw new Error((installed.stderr || installed.stdout || "DasBrowser installation failed.").trim());
+        setup = { exitCode: installed.code, durationMs: Date.now() - setupStartedAt };
+        if (installed.code === -1 && /^Command cancelled/i.test(String(installed.stderr || ""))) throw new Error("Command cancelled.");
+        if (installed.code !== 0) {
+          throw new Error(dasbrowserSetupFailureMessage({ ...setup, output: installed.stderr || installed.stdout, homeDir: options.homeDir, env: options.env }));
+        }
+        // The setup installs synchronously (the browser is in place before it
+        // exits); the short wait only covers a slow file system or scanner.
         for (let attempt = 0; attempt < 30 && !resolveDasbrowserRuntime(options); attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 1_000));
         }
       }
       const executable = resolveDasbrowserRuntime(options);
-      if (!executable) throw new Error("DasBrowser installed, but its browser executable could not be found.");
+      if (!executable) throw new Error(dasbrowserNotFoundMessage({ ...options, setup }));
       const releaseVersion = dasbrowserReleaseVersion(url);
       if (releaseVersion) {
         await fs.writeFile(

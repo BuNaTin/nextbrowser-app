@@ -3,10 +3,11 @@ const { mcpProfileScope } = require("./mcp-profile-scope.cjs");
 const { addChatWorkspaceProfile } = require("./chat-profile-scope.cjs");
 const { requireVerificationCapableCLI, verificationFailureDialogOptions, verificationFailureDialogChoice } = require("./verification-policy.cjs");
 const { agentLoginStatus } = require("./agent-login-status.cjs");
-const { app, BrowserWindow, ipcMain, shell, nativeImage, nativeTheme, dialog, Menu, clipboard, safeStorage } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, nativeImage, nativeTheme, dialog, Menu, clipboard, safeStorage, screen } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { createAppUpdateDownload } = require("./app-update-download.cjs");
 const { execFileSync, spawn } = require("node:child_process");
+const { nextctlPlatformArchive: platformNextctlArchive, runningUnderRosetta } = require("./nextctl-archive.cjs");
 const { feedbackBuildContext } = require("./app-build-info.cjs");
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
@@ -45,7 +46,7 @@ const {
 const { applyLegacyRuntimeMigration, applyRuntimeRootMigration, clearRuntimeCredential, runtimeAPIBaseURL, accountAPIBaseURL } = require("./runtime-config.cjs");
 const { createGitHubStarsSource } = require("./github-stars.cjs");
 const { githubStarStatus, verifyGitHubStar } = require("./github-star-reward.cjs");
-const { sendNodeMavenInvite } = require("./proxy-traffic.cjs");
+const { loadBackendConfig, normalizeAPIBaseURL, sendNodeMavenInvite } = require("./proxy-traffic.cjs");
 const { ensureWorkspaceInstructions } = require("./workspace-instructions.cjs");
 const pty = require("node-pty");
 const {
@@ -91,6 +92,7 @@ const {
   updateAutomationRunStep,
 } = require("./automation-sync.cjs");
 const { cancelAllAutomationRecipes, cancelAutomationRecipe, executeAutomationRecipe } = require("./automation-runner.cjs");
+const { annotateRecording, annotateWorkflow, createSharedCopyRegistry, markSharedCopyOnServer } = require("./automation-shared-copies.cjs");
 const { cancelAllAutomationElementPicks, cancelAutomationElementPick, pickAutomationElement } = require("./automation-element-picker.cjs");
 const { activeAutomationRecordingHasDataAction, activeAutomationTraceFile, attachAutomationPageRecording, cancelAllAutomationPageRecordings, recordAutomationToolAction, startAutomationPageRecording, stopAutomationPageRecording } = require("./automation-page-recorder.cjs");
 const { browserInstallArgs, requiresBrowserRuntime, resolveBrowserRuntime } = require("./browser-runtime.cjs");
@@ -119,12 +121,20 @@ const {
   DASBROWSER_DOWNLOADS,
   adaptDasbrowserArgs,
   dasbrowserAppCopyOptions,
+  dasbrowserNotFoundMessage,
   dasbrowserReleaseVersion,
+  dasbrowserSetupFailureMessage,
   installedDasbrowserReleaseVersion,
   officialDasbrowserURLFromHTML,
   requestedBrowserRuntime,
   resolveDasbrowserRuntime,
 } = require("./dasbrowser-runtime.cjs");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const { createClientErrorReporter, errorReportingAllowed } = require("./client-error-reporter.cjs");
+const { clientEnvironmentAllowed, createClientEnvironment } = require("./client-environment.cjs");
+const { createEnvironmentCollector } = require("./client-environment-collect.cjs");
+const { describeBackendRequest, setBackendClientInfo, setBackendRequestObserver, tracedBackendFetch } = require("./backend-fetch.cjs");
+const { describeNbcResult, isNextctlBinary } = require("./nbc-failure-report.cjs");
 
 const children = new Map();
 const terminals = new Map();
@@ -178,6 +188,94 @@ let multiloginFolders;
 let multiloginCredentialLoadError = "";
 let multiloginCredentialLoadPromise = null;
 const nextctlAutomationTraceSupport = new Map();
+
+// Client error reports (see client-error-reporter.cjs). The IPC command or
+// agent request being handled is kept per async call chain, so a failure deep
+// inside it is reported with the action that led to it.
+const reportingContext = new AsyncLocalStorage();
+const appBuildVersion = feedbackBuildContext({ app, execFileSync }).app_version;
+const errorReporter = createClientErrorReporter({
+  dir: path.join(app.getPath("userData"), "client-errors"),
+  allowed: errorReportingAllowed({ isDevBuild }),
+  client: {
+    version: appBuildVersion,
+    platform: process.platform,
+    arch: process.arch,
+    os_version: systemVersion(),
+  },
+  homeDir: os.homedir(),
+  resolveEndpoint: runtimeBackendEndpoint,
+  getAction: () => reportingContext.getStore()?.action,
+});
+const backendFetch = tracedBackendFetch();
+setBackendClientInfo({ name: "nextbrowser-app", version: app.getVersion() });
+setBackendRequestObserver((request) => {
+  const { breadcrumb, event } = describeBackendRequest(request);
+  errorReporter.breadcrumb("api", breadcrumb);
+  if (event) errorReporter.capture(event);
+});
+// Device data (see client-environment.cjs): Settings → Device data groups,
+// sent for the signed-in account under the error reporter's install id.
+const environmentCollector = createEnvironmentCollector({
+  app,
+  screen,
+  appVersion: appBuildVersion,
+  installedRuntimes: installedBrowserRuntimes,
+  multiloginConnected,
+});
+const clientEnvironment = createClientEnvironment({
+  dir: path.join(app.getPath("userData"), "client-environment"),
+  allowed: clientEnvironmentAllowed({ isDevBuild }),
+  installId: () => errorReporter.installId,
+  resolveEndpoint: runtimeBackendEndpoint,
+  collect: environmentCollector.collect,
+  fetchImpl: backendFetch,
+});
+let appQuitting = false;
+let quittingForUpdate = false;
+let quitFlushStarted = false;
+
+function systemVersion() {
+  try {
+    return typeof process.getSystemVersion === "function" ? process.getSystemVersion() : os.release();
+  } catch {
+    return os.release();
+  }
+}
+// Error reports and device data go to the same API base as the app's other
+// runtime calls, signed with the paired account's key when there is one. An
+// empty key means signed out: error reports then go anonymously, device data
+// not at all.
+async function runtimeBackendEndpoint() {
+  const env = {
+    ...process.env,
+    NEXTBROWSER_CONFIG_DIR: path.join(nextbrowserRuntimeRoot(), "config"),
+    CLAWBROWSER_API_BASE_URL: runtimeAPIBaseURL(process.env),
+  };
+  try {
+    return await loadBackendConfig({ env });
+  } catch {
+    return {
+      apiKey: "",
+      baseURL: normalizeAPIBaseURL(env.NEXTBROWSER_DEV_API_BASE_URL || env.NEXTBROWSER_API_BASE_URL || env.CLAWBROWSER_API_BASE_URL),
+    };
+  }
+}
+function reportNbcResult(args, result, outcome, durationMs) {
+  try {
+    const { breadcrumb, event } = describeNbcResult({ args, result, outcome, durationMs });
+    errorReporter.breadcrumb("nbc", breadcrumb);
+    if (event) errorReporter.capture(event);
+  } catch {
+    // Reporting never changes a command's result.
+  }
+}
+const AGENT_CONTROL_ROUTES = new Set(["/profile/start", "/profile/stop", "/artifact/save", "/project/create", "/project/list", "/project/delete", "/personal-proxies/list"]);
+function agentControlAction(request) {
+  const action = `agent ${AGENT_CONTROL_ROUTES.has(request.url) ? request.url : "unknown"}`;
+  errorReporter.breadcrumb("ipc", action);
+  return action;
+}
 
 const CODEX_TERMINAL_PROFILE = "nextbrowser";
 const CODEX_TERMINAL_PROFILE_CONTENT = `[plugins."browser@openai-bundled"]
@@ -412,13 +510,19 @@ function commandSpec(binary, args) {
 }
 async function run(binary, args, extraEnv = {}, options = {}) {
   const spec = commandSpec(binary, args);
-  return runCommand(spec.file, spec.args, {
+  const observed = isNextctlBinary(binary);
+  const startedAt = Date.now();
+  let outcome = {};
+  const result = await runCommand(spec.file, spec.args, {
     env: childEnv(extraEnv),
     windowsHide: true,
     maxBuffer: 32 * 1024 * 1024,
     requestId: options.requestId,
     timeoutMs: options.timeoutMs,
+    ...(observed ? { onSettled: (settled) => { outcome = settled; } } : {}),
   });
+  if (observed) reportNbcResult(args, result, outcome, Date.now() - startedAt);
+  return result;
 }
 // Scanning every known Clawbrowser profile (a machine can accumulate dozens
 // over time) by spawning one `nbc` process per profile, all at once, can
@@ -515,16 +619,8 @@ function managedNextctlBin() {
 }
 function nextctlPlatformArchive() {
   const arch = os.arch();
-  if (process.platform === "darwin") {
-    if (arch === "arm64") return { name: "nbc-macos-arm64.tar.gz", kind: "tar" };
-    if (arch === "x64") return { name: "nbc-macos-amd64.tar.gz", kind: "tar" };
-  }
-  if (process.platform === "linux") {
-    if (arch === "arm64") return { name: "nbc-linux-arm64.tar.gz", kind: "tar" };
-    if (arch === "x64") return { name: "nbc-linux-amd64.tar.gz", kind: "tar" };
-  }
-  if (process.platform === "win32" && arch === "x64") return { name: "nbc-win-amd64.zip", kind: "zip" };
-  throw new Error(`Unsupported nextctl platform: ${process.platform}/${arch}`);
+  const translated = process.platform === "darwin" && arch === "x64" && runningUnderRosetta(execFileSync);
+  return platformNextctlArchive({ platform: process.platform, arch, translated });
 }
 function findNextctlInTree(root) {
   return findBinaryUnderRoots("nextctl", [root]) || findBinaryUnderRoots("nbc", [root]);
@@ -640,7 +736,9 @@ async function executeNextctlRaw(commandArgs, options = {}) {
       adaptedArgs = adaptDasbrowserArgs(adaptedArgs, executable);
     } else if (browserRuntime === "clawbrowser" && requiresBrowserRuntime(adaptedArgs)) {
       await ensureClawbrowserRuntime(bin, { requestId: options.requestId });
-    } else if (browserRuntime === "camoufox" && requiresBrowserRuntime(adaptedArgs)) {
+    } else if (browserRuntime === "camoufox" && requiresBrowserRuntime(adaptedArgs) && !(await installedCamoufoxVersion(nextbrowserRuntimeRoot()))) {
+      // Only the first start prepares Camoufox; starting an installed one must
+      // not show the install card.
       setBrowserRuntimeInstallStatus("camoufox", "installing", { message: "Preparing the Camoufox browser runtime…", requestId: options.requestId });
       try {
         const result = await run(bin, ["--verify-on-start-only", ...adaptedArgs], options.extraEnv || {}, options);
@@ -682,7 +780,7 @@ function sendHostProfileFailure(response, { action, profile, runtime, startedAt 
 
 async function ensureAgentControlServer() {
   if (agentControlServer) return agentControlURL;
-  agentControlServer = http.createServer((request, response) => {
+  agentControlServer = http.createServer((request, response) => reportingContext.run({ action: agentControlAction(request) }, () => {
     // Set once the request names a profile, so a host error thrown while
     // starting it is still reported for that profile.
     let hostProfile;
@@ -831,7 +929,7 @@ async function ensureAgentControlServer() {
       if (hostProfile) sendHostProfileFailure(response, hostProfile, { error });
       else sendControlResponse(response, 500, { ok: false, error: error?.message || "start_failed" });
     });
-  });
+  }));
   await new Promise((resolve, reject) => {
     agentControlServer.once("error", reject);
     agentControlServer.listen(0, "127.0.0.1", resolve);
@@ -911,6 +1009,8 @@ async function ensureDasbrowserRuntime({ force = false, reportStatus = true, req
       throw new Error("DasBrowser is currently available only for macOS and Windows.");
     }
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "nextbrowser-dasbrowser-"));
+    // What the Windows setup reported, for the error when no browser appears.
+    let setup;
     try {
       const url = await officialDasbrowserDownloadUrl({ signal: install.controller?.signal });
       if (reportStatus) setBrowserRuntimeInstallStatus("dasbrowser", "downloading", { requestId: install.id });
@@ -940,14 +1040,21 @@ async function ensureDasbrowserRuntime({ force = false, reportStatus = true, req
         const installer = path.join(tempDir, "DasbrowserSetup.exe");
         await downloadFile(url, installer, { signal: install.controller?.signal });
         if (reportStatus) setBrowserRuntimeInstallStatus("dasbrowser", "installing", { requestId: install.id });
+        const setupStartedAt = Date.now();
         const installed = await run(installer, ["--silent", "--install"], {}, { requestId: install.id, timeoutMs: 10 * 60 * 1000 });
-        if (installed.code !== 0) throw new Error((installed.stderr || installed.stdout || "DasBrowser installation failed.").trim());
+        setup = { exitCode: installed.code, durationMs: Date.now() - setupStartedAt };
+        if (installed.code === -1 && /^Command cancelled/i.test(String(installed.stderr || ""))) throw new Error("Command cancelled.");
+        if (installed.code !== 0) {
+          throw new Error(dasbrowserSetupFailureMessage({ ...setup, output: installed.stderr || installed.stdout, homeDir: options.homeDir, env: options.env }));
+        }
+        // The setup installs synchronously (the browser is in place before it
+        // exits); the short wait only covers a slow file system or scanner.
         for (let attempt = 0; attempt < 30 && !resolveDasbrowserRuntime(options); attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 1_000));
         }
       }
       const executable = resolveDasbrowserRuntime(options);
-      if (!executable) throw new Error("DasBrowser installed, but its browser executable could not be found.");
+      if (!executable) throw new Error(dasbrowserNotFoundMessage({ ...options, setup }));
       const releaseVersion = dasbrowserReleaseVersion(url);
       if (releaseVersion) {
         await fs.writeFile(
@@ -981,6 +1088,24 @@ let githubStarsSource;
 function requestGitHubStars(options) {
   if (!githubStarsSource) githubStarsSource = createGitHubStarsSource({ cachePath: githubStarsCachePath() });
   return githubStarsSource.get(options);
+}
+let sharedCopyRegistry = null;
+function sharedAutomationCopies() {
+  if (!sharedCopyRegistry) sharedCopyRegistry = createSharedCopyRegistry(path.join(dataDir(), "automation-shared-copies.json"));
+  return sharedCopyRegistry;
+}
+async function acceptSharedAutomation(shareId, deps) {
+  const accepted = await acceptAutomationShare(shareId, deps);
+  // Record the copy before anything else can fail: a shared copy with its own
+  // page script must never run as if the recipient had written it.
+  sharedAutomationCopies().mark(String(accepted?.id || ""), { kind: accepted?.source_kind, shareId });
+  await markSharedCopyOnServer(accepted, shareId, {
+    listWorkflows: () => listAutomationWorkflows(deps),
+    putWorkflow: (workflow) => putAutomationWorkflow(workflow, deps),
+    listRecordings: () => listAutomationRecordings(deps),
+    putRecording: (recording) => putAutomationRecording(recording, deps),
+  }).catch((error) => console.warn("[automation] could not mark the shared copy on the server:", error?.message || error));
+  return accepted;
 }
 function localAutomationArtifacts() {
   if (!automationArtifactStore) {
@@ -1323,6 +1448,33 @@ async function installedDasbrowserVersion() {
       ? dasbrowserReleaseVersion(DASBROWSER_DOWNLOADS.darwin)
       : "";
   }
+}
+// Installed browser runtimes and their versions, for device data. Reads the
+// same local release metadata as the update check, without the network.
+async function installedBrowserRuntimes() {
+  const runtimeRoot = nextbrowserRuntimeRoot();
+  const clawbrowserExecutable = resolveBrowserRuntime({ platform: process.platform, homeDir: home(), env: process.env, runtimeRoot });
+  const [clawbrowser, camoufox, dasbrowser] = await Promise.all([
+    clawbrowserExecutable ? installedClawbrowserVersion(runtimeRoot, clawbrowserExecutable) : "",
+    installedCamoufoxVersion(runtimeRoot),
+    installedDasbrowserVersion(),
+  ]);
+  const installed = {
+    clawbrowser: !!clawbrowserExecutable,
+    camoufox: !!camoufox,
+    dasbrowser: !!resolveDasbrowserRuntime(dasbrowserRuntimeOptions()),
+  };
+  const versions = { clawbrowser, camoufox, dasbrowser };
+  return Object.keys(installed)
+    .filter((name) => installed[name])
+    .map((name) => ({ name, ...(versions[name] ? { version: versions[name] } : {}) }));
+}
+// Whether a Multilogin account is connected, once the app has loaded its
+// credential; device data never triggers that load itself.
+async function multiloginConnected() {
+  if (!multiloginCredentialLoadPromise) return undefined;
+  await multiloginCredentialLoadPromise;
+  return Boolean(multiloginAutomationToken);
 }
 async function checkForBrowserRuntimeUpdates() {
   if (browserRuntimeUpdateCheckPromise) return browserRuntimeUpdateCheckPromise;
@@ -1747,7 +1899,7 @@ function apiBaseURL(raw) {
   return accountAPIBaseURL(raw, process.env);
 }
 async function apiFetchJSON(baseURL, route, options = {}) {
-  const response = await fetch(`${apiBaseURL(baseURL)}${route}`, {
+  const response = await backendFetch(`${apiBaseURL(baseURL)}${route}`, {
     ...options,
     headers: {
       "content-type": "application/json",
@@ -1788,9 +1940,13 @@ async function invokeCommand(command, args = {}, sender) {
     case "app_install_update": {
       if (appUpdateStatus.status !== "downloaded") return false;
       try {
+        // The installer takes over on quit; error reports wait for next launch.
+        quittingForUpdate = true;
+        errorReporter.persistSync();
         autoUpdater.quitAndInstall(false, true);
         return true;
       } catch (error) {
+        quittingForUpdate = false;
         reportUpdaterError(error);
         return false;
       }
@@ -1942,7 +2098,10 @@ async function invokeCommand(command, args = {}, sender) {
     case "nextctl_cancel": return cancelCommand(args.requestId) || cancelBrowserRuntimeInstall(args.requestId);
     case "nextctl_version": {
       const bin = await resolveOrInstallNextctl(); if (!bin) throw new Error("not found");
-      return await readCLIVersion(bin, run);
+      const version = await readCLIVersion(bin, run);
+      errorReporter.setNbcVersion(version);
+      environmentCollector.setNbcVersion(version);
+      return version;
     }
     case "nextctl_supports_skill": { const bin = await resolveOrInstallNextctl(); if (!bin) throw new Error("not found"); return nextctlHasSkill(bin); }
     case "projects_list": return await listProjects({ env: childEnv() });
@@ -2017,6 +2176,15 @@ async function invokeCommand(command, args = {}, sender) {
     }
     case "nodemaven_send_invite": return sendNodeMavenInvite({ env: childEnv() });
     case "app_platform": return { platform: process.platform, arch: process.arch };
+    case "error_reporting_status": return errorReporter.status();
+    case "error_reporting_set": return errorReporter.setUserEnabled(args.enabled !== false);
+    case "client_environment_status": return clientEnvironment.status();
+    case "client_environment_set": return clientEnvironment.setGroup(String(args.group || ""), args.enabled !== false);
+    case "client_environment_app_setup": {
+      environmentCollector.setAppSetup(args);
+      clientEnvironment.checkSoon();
+      return null;
+    }
     case "app_focus": {
       focusMainWindow();
       setTimeout(() => focusMainWindow(), 400);
@@ -2167,15 +2335,15 @@ async function invokeCommand(command, args = {}, sender) {
     case "artifact_workspace_delete": {
       return await localAutomationArtifacts().deleteWorkspace(String(args.workspaceId || ""));
     }
-    case "automation_workflows_list": return await listAutomationWorkflows({ env: childEnv() });
-    case "automation_workflow_put": return await putAutomationWorkflow(args.workflow || {}, { env: childEnv() });
+    case "automation_workflows_list": return (await listAutomationWorkflows({ env: childEnv() })).map((workflow) => annotateWorkflow(workflow, sharedAutomationCopies()));
+    case "automation_workflow_put": return annotateWorkflow(await putAutomationWorkflow(args.workflow || {}, { env: childEnv() }), sharedAutomationCopies());
     case "automation_workflow_delete": return await deleteAutomationWorkflow(String(args.id || ""), { env: childEnv() });
-    case "automation_recordings_list": return await listAutomationRecordings({ env: childEnv() });
+    case "automation_recordings_list": return (await listAutomationRecordings({ env: childEnv() })).map((recording) => annotateRecording(recording, sharedAutomationCopies()));
     case "automation_recording_put": return await putAutomationRecording(args.recording || {}, { env: childEnv() });
     case "automation_recording_delete": return await deleteAutomationRecording(String(args.id || ""), { env: childEnv() });
     case "automation_shares_list": return await listAutomationShares(String(args.box || "inbox"), { env: childEnv() });
     case "automation_share_create": return await createAutomationShare(args.share || {}, { env: childEnv() });
-    case "automation_share_accept": return await acceptAutomationShare(String(args.id || ""), { env: childEnv() });
+    case "automation_share_accept": return await acceptSharedAutomation(String(args.id || ""), { env: childEnv() });
     case "automation_share_decline": return await declineAutomationShare(String(args.id || ""), { env: childEnv() });
     case "automation_share_revoke": return await revokeAutomationShare(String(args.id || ""), { env: childEnv() });
     case "automation_runs_list": return await listAutomationRuns(String(args.workspaceId || ""), { env: childEnv() });
@@ -2198,6 +2366,7 @@ async function invokeCommand(command, args = {}, sender) {
       return await executeAutomationRecipe({
         executionId: args.executionId,
         recipe: args.recipe,
+        sharedCopy: args.sharedCopy === true || sharedAutomationCopies().has(String(args.sourceId || "")),
         parameters: args.parameters,
         profile: args.profile,
         runtime: requestedRuntime === "dasbrowser" ? "chromium" : requestedRuntime,
@@ -2797,6 +2966,16 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: true, backgroundThrottling: false },
   });
   window.once("ready-to-show", () => window.show());
+  window.on("unresponsive", () => {
+    if (appQuitting) return;
+    errorReporter.capture({
+      source: "main",
+      kind: "process_gone",
+      name: "renderer unresponsive",
+      message: "The app window stopped responding.",
+      context: { process_type: "renderer", state: "unresponsive" },
+    });
+  });
   // Reloading a WebContents that just displayed a WebRTC video can leave its
   // macOS compositor surface blank even though React and the DOM are healthy.
   // A fresh window gives the renderer a fresh surface while preserving the
@@ -2836,19 +3015,58 @@ function logCrash(kind, detail) {
     require("node:fs").appendFileSync(path.join(dataDir(), "crash.log"), line);
   } catch {}
 }
+function reportMainError(kind, error) {
+  // With stdout closed every console write fails with EPIPE; reporting that
+  // would only report itself.
+  if (error?.code === "EPIPE") return;
+  const isError = error instanceof Error;
+  errorReporter.capture({
+    source: "main",
+    kind,
+    name: isError ? error.name : "NonErrorRejection",
+    message: isError ? error.message : typeof error === "string" ? error : `Rejected with ${Object.prototype.toString.call(error)}`,
+    stack: isError ? error.stack : undefined,
+    context: typeof error?.code === "string" ? { code: error.code } : undefined,
+  });
+}
+function reportProcessGone(processType, details, contentsType) {
+  if (appQuitting) return;
+  errorReporter.capture({
+    source: "main",
+    kind: "process_gone",
+    name: `${processType} ${details.reason}`,
+    message: `A ${processType} process ended: ${details.reason} (exit code ${details.exitCode})`,
+    context: {
+      process_type: processType,
+      reason: details.reason,
+      exit_code: details.exitCode,
+      ...(contentsType ? { contents_type: contentsType } : {}),
+      ...(details.serviceName ? { service_name: details.serviceName } : {}),
+      ...(details.name ? { process_name: details.name } : {}),
+    },
+  });
+}
 process.on("uncaughtException", (error) => {
   logCrash("main-uncaught", { message: error?.message, stack: String(error?.stack || "").split("\n").slice(0, 12) });
+  reportMainError("exception", error);
   // Rethrowing would abort with the default handler; the app stays up and the
   // breadcrumb tells us what would have taken it down.
 });
 process.on("unhandledRejection", (reason) => {
   logCrash("main-unhandled-rejection", { message: reason instanceof Error ? reason.message : String(reason) });
+  reportMainError("unhandled_rejection", reason);
 });
-app.on("render-process-gone", (_event, _webContents, details) => {
-  if (details.reason !== "clean-exit") logCrash("renderer-gone", details);
+app.on("render-process-gone", (_event, webContents, details) => {
+  if (details.reason === "clean-exit") return;
+  logCrash("renderer-gone", details);
+  let contentsType;
+  try { contentsType = webContents?.getType?.(); } catch { /* already destroyed */ }
+  reportProcessGone("renderer", details, contentsType);
 });
 app.on("child-process-gone", (_event, details) => {
-  if (details.reason !== "clean-exit" && details.type !== "Utility") logCrash("child-gone", details);
+  if (details.reason === "clean-exit" || details.type === "Utility") return;
+  logCrash("child-gone", details);
+  reportProcessGone(String(details.type || "child").toLowerCase(), details);
 });
 
 const gotLock = app.requestSingleInstanceLock();
@@ -2883,11 +3101,27 @@ if (!gotLock) {
     } else {
       app.setAsDefaultProtocolClient(DEEP_LINK_PROTOCOL);
     }
-    ipcMain.handle("nextbrowser:invoke", (event, command, args) => invokeCommand(command, args, event.sender));
+    ipcMain.handle("nextbrowser:invoke", (event, command, args) => {
+      const action = /^[a-z0-9_]{1,64}$/.test(String(command)) ? command : "unknown";
+      // nbc calls get their own, more specific breadcrumb from run().
+      if (action !== "nextctl_run") errorReporter.breadcrumb("ipc", action);
+      return reportingContext.run({ action }, () => invokeCommand(command, args, event.sender));
+    });
+    // Fire-and-forget reports from the app window; webviews have no say.
+    const fromAppWindow = (event) => {
+      try { return event.sender.getType() === "window"; } catch { return false; }
+    };
+    ipcMain.on("nextbrowser:client-error", (event, payload) => {
+      if (fromAppWindow(event)) errorReporter.captureFromRenderer(payload);
+    });
+    ipcMain.on("nextbrowser:client-breadcrumb", (event, payload) => {
+      if (fromAppWindow(event)) errorReporter.breadcrumbFromRenderer(payload);
+    });
     createWindow();
     for (const arg of process.argv) handleDeepLink(arg);
     startAutoUpdater();
     startBrowserRuntimeUpdateChecks();
+    clientEnvironment.start();
     app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });
 }
@@ -2896,9 +3130,20 @@ app.on("open-url", (event, url) => {
   handleDeepLink(url);
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  appQuitting = true;
+  // One bounded attempt (at most 2 s) to send queued error reports; whatever
+  // is left stays in userData for the next launch.
+  if (!quitFlushStarted && !quittingForUpdate && errorReporter.pendingCount() > 0) {
+    quitFlushStarted = true;
+    event.preventDefault();
+    void errorReporter.flushBeforeQuit(2_000).finally(() => app.quit());
+  } else {
+    errorReporter.persistSync();
+  }
   if (browserRuntimeUpdateTimer) clearInterval(browserRuntimeUpdateTimer);
   if (appUpdateTimer) clearInterval(appUpdateTimer);
+  clientEnvironment.stop();
   for (const socket of remoteSignalSockets.values()) socket.close();
   remoteSignalSockets.clear();
   for (const child of children.values()) child.kill();

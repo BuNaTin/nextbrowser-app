@@ -56,3 +56,23 @@ test("finishes after exit when a detached descendant keeps stdout open", async (
   assert.equal(result.stdout, "ready");
   assert.ok(Date.now() - startedAt < 1_000, "runner waited for the detached descendant");
 });
+
+test("tells an observer how the command ended without changing the result", async () => {
+  const outcomes = [];
+  const onSettled = (outcome) => outcomes.push(outcome);
+  const ok = await runCommand(process.execPath, ["-e", "process.stdout.write('ok')"], { timeoutMs: 2_000, onSettled });
+  assert.deepEqual(ok, { stdout: "ok", stderr: "", code: 0 });
+  await runCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { timeoutMs: 1_000, onSettled });
+  const cancelled = runCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { requestId: "observed-cancel", timeoutMs: 5_000, onSettled });
+  cancelCommand("observed-cancel");
+  await cancelled;
+  const missing = await runCommand("/definitely/not/a/binary", [], { onSettled: () => { throw new Error("observer"); } });
+  await runCommand("/definitely/not/a/binary", [], { onSettled });
+
+  assert.deepEqual(outcomes[0], { cancelled: false, timedOut: false, spawnError: false, signal: null });
+  assert.equal(outcomes[1].timedOut, true);
+  assert.equal(outcomes[1].cancelled, false);
+  assert.equal(outcomes[2].cancelled, true);
+  assert.equal(missing.code, -1, "a throwing observer does not affect the command");
+  assert.equal(outcomes[3].spawnError, true);
+});

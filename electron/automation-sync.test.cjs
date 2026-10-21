@@ -155,7 +155,9 @@ test("keeps sharing account-scoped in the host and visible UI", async () => {
     fs.readFile(path.join(__dirname, "main.cjs"), "utf8"),
     fs.readFile(path.join(__dirname, "../src/components/AutomationStudio.tsx"), "utf8"),
   ]);
-  assert.match(main, /automation_share_accept[\s\S]*acceptAutomationShare\(String\(args\.id \|\| ""\), \{ env: childEnv\(\) \}\)/);
+  assert.match(main, /automation_share_accept[\s\S]*acceptSharedAutomation\(String\(args\.id \|\| ""\), \{ env: childEnv\(\) \}\)/);
+  // The accepted copy is recorded as shared before anything else can fail.
+  assert.match(main, /async function acceptSharedAutomation\(shareId, deps\) \{\s*const accepted = await acceptAutomationShare\(shareId, deps\);\s*\/\/[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*sharedAutomationCopies\(\)\.mark\(/);
   assert.doesNotMatch(main, /automation_share_accept[\s\S]{0,240}workspaceId/);
   assert.match(studio, /automation_share_accept", \{ id: share\.id \}/);
   assert.match(studio, /Add to my automations/);

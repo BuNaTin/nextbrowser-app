@@ -20,9 +20,10 @@ import { agentById, agentInvocation } from "../agents";
 import { parseWorkflowAiEdit, workflowAiEditPrompt, workflowAiEditRepairPrompt, type WorkflowAiEdit } from "../lib/workflowAiEdit";
 import { automationRepairTask, shouldAutoRepairAutomation } from "../lib/automationRepair";
 import { automationTrustSummary, trustEffectLabel } from "../lib/automationTrust";
+import { isSharedCopy, markedAsSharedCopy, sharedScriptBlock } from "../lib/sharedAutomation";
 
 type StudioSection = "recorder" | "workflows" | "artifacts";
-type BackendRecording = { id: string; status: string; revision: number; document: { run?: CapturedRun }; created_at?: string; updated_at: string };
+type BackendRecording = { id: string; status: string; revision: number; document: { run?: CapturedRun; shared_copy?: Record<string, unknown> }; created_at?: string; updated_at: string; sharedCopy?: boolean };
 type BackendRun = { id: string; workflow_id: string; workflow_version: number; status: "queued" | "running" | "completed" | "failed" | "cancelled"; error?: string; created_at: string; completed_at?: string };
 type ElementPickMode = "target" | "presence" | "container" | "field" | "next";
 type ElementPickState = { pickId: string; actionIndex: number; mode: ElementPickMode; fieldName?: string };
@@ -779,9 +780,16 @@ export function AutomationStudio() {
   const recordingModeLabel = recordingDestination === "workflow" ? "Workflow capture mode" : "Manual browser recording";
   const recordingModeButtonLabel = recordingDestination === "workflow" ? "Stop & open workflow" : "Stop recording";
 
+  // A workflow built from a shared recording is still the sender's steps.
+  const workflowFromRecording = (run: CapturedRun): BrowserWorkflowSkill => {
+    const workflow = skillFromRun(run);
+    const recording = recordings.find((item) => item.document.run?.id === run.id);
+    return recording && (recording.sharedCopy || recording.document.shared_copy) ? markedAsSharedCopy(workflow, recording.id) : workflow;
+  };
+
   const saveCapture = async (run: CapturedRun) => {
     try {
-      const saved = await invoke<BrowserWorkflowSkill>("automation_workflow_put", { workflow: skillFromRun(run) });
+      const saved = await invoke<BrowserWorkflowSkill>("automation_workflow_put", { workflow: workflowFromRecording(run) });
       clearActiveAutomationRecording();
       setRecordingSince(0);
       await loadWorkflows();
@@ -1111,7 +1119,7 @@ export function AutomationStudio() {
     const now = Date.now();
     setStudioError(undefined);
     try {
-      const copy = await invoke<BrowserWorkflowSkill>("automation_workflow_put", { workflow: { ...structuredClone(workflow), id: uid(), title: `${workflow.title} copy`, revision: 0, createdAt: now, updatedAt: now, recipe: { ...workflow.recipe, example_key: undefined, example_version: undefined, demo_key: undefined, demo_version: undefined } } });
+      const copy = await invoke<BrowserWorkflowSkill>("automation_workflow_put", { workflow: { ...structuredClone(workflow), id: uid(), title: `${workflow.title} copy`, revision: 0, createdAt: now, updatedAt: now, recipe: { ...workflow.recipe, example_key: undefined, example_version: undefined, demo_key: undefined, demo_version: undefined, ...(isSharedCopy(workflow) && !workflow.recipe.shared_copy ? { shared_copy: { share_id: "" } } : {}) } } });
       setWorkflows((current) => [copy, ...current]);
       setSelectedWorkflowId(copy.id);
       setWorkflowListCollapsed(true);
@@ -1245,7 +1253,7 @@ export function AutomationStudio() {
   };
 
   const replayRecording = async (run: CapturedRun) => {
-    const workflow = skillFromRun(run);
+    const workflow = workflowFromRecording(run);
     requestRecipe(workflow, "recording", run.id);
   };
 
@@ -1255,7 +1263,7 @@ export function AutomationStudio() {
     const workflow = failedExecution.workflowSnapshot || (failedExecution.sourceKind === "workflow"
       ? workflows.find((item) => item.id === failedExecution.sourceId)
       : recordings.map((item) => item.document.run).filter((run): run is CapturedRun => !!run).find((run) => run.id === failedExecution.sourceId));
-    const repairWorkflow = workflow && "recipe" in workflow ? workflow : workflow ? skillFromRun(workflow) : undefined;
+    const repairWorkflow = workflow && "recipe" in workflow ? workflow : workflow ? workflowFromRecording(workflow) : undefined;
     if (!repairWorkflow) return setStudioError("The source automation is no longer available.");
     const expectedArtifactName = [...repairWorkflow.actions].reverse().find((action) => action.tool === "save_artifact")?.arguments.name;
     let agentExecution: AutomationExecution = { ...failedExecution, executionId: uid(), engine: "agent", phase: "preparing", startedAt: Date.now(), progress: undefined, completedActions: undefined, detail: automatic ? "The saved page step changed. Starting automatic AI repair…" : "Preparing AI-assisted repair…", error: undefined, failedStep: undefined, autoRepairAttempted: true, expectedArtifactName: typeof expectedArtifactName === "string" ? expectedArtifactName : undefined, outputValidated: undefined, outputValidationError: undefined, repairValidationRequired: true, repairPersisted: undefined, repairPersistenceError: undefined };
@@ -1462,6 +1470,7 @@ export function AutomationStudio() {
           <div className="workflow-editor-head"><div><input className="workflow-title-input" aria-label="Workflow name" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /><div className="workflow-editor-meta"><label className="workflow-domain-field"><Icon name="globe" size={13} /><span>Domain</span><input className="workflow-domain-input" aria-label="Website domain" value={draft.domain} placeholder="example.com" onChange={(event) => setDraft({ ...draft, domain: event.target.value })} /></label><span className="workflow-runtime-chip"><Icon name="play.rectangle.on.rectangle.fill" size={12} /> {automationProfile || "Default browser"}</span>{draftDirty ? <small className="workflow-unsaved">Unsaved</small> : <small className="workflow-saved"><Icon name="checkmark" size={10} /> Saved</small>}</div></div><div className="row workflow-editor-actions"><button className="secondary workflow-ai-toggle" aria-expanded={workflowAiOpen} disabled={workflowAiBusy} onClick={() => setWorkflowAiOpen((open) => !open)}><Icon name="sparkles" size={12} /> Edit with AI</button>{draftDirty && <button className="secondary workflow-save-button" disabled={saving || !!draftValidationError || !!Object.keys(actionErrors).length} title="Save changes without running" onClick={() => void saveDraft()}>Save</button>}<button className="primary" disabled={saving || executionBusy || !!draftValidationError || !!Object.keys(actionErrors).length} title={draftValidationError || (executionBusy ? "Stop the running automation first" : draftDirty ? "Save changes and run this workflow" : "Run workflow")} onClick={() => void runDraft()}>{saving && <Spinner size={12} />} {draftDirty ? "Save & run" : "Run"}</button><details className="workflow-more-menu"><summary aria-label="More workflow actions" title="More workflow actions"><Icon name="ellipsis.circle" size={16} /></summary><div><button onClick={() => setShareTarget({ kind: "workflow", id: draft.id, title: draft.title })}>Share workflow</button><button onClick={() => void duplicateWorkflow(draft)}>Duplicate workflow</button><button className="danger-text" onClick={() => void deleteWorkflow(draft)}>Delete workflow</button></div></details></div></div>
           {elementPick && <div className="workflow-picker-banner" role="status"><Spinner size={13} /><span><strong>Selecting an element for step {elementPick.actionIndex + 1}</strong><small>Click the highlighted element in the browser. Press Esc there to cancel.</small></span><button className="secondary" onClick={() => void cancelElementPick()}>Cancel</button></div>}
           {draftValidationError && <div className="error automation-inline-error" role="alert">{draftValidationError}</div>}
+          {!draftValidationError && sharedScriptBlock(draft) && <div className="error automation-inline-error" role="alert">{sharedScriptBlock(draft)}</div>}
           {workflowAiOpen && <section className="workflow-ai-editor" aria-label="Edit workflow with AI">
             <div className="workflow-ai-editor-copy"><span className="workflow-goal-icon"><Icon name="sparkles" size={14} /></span><span><strong>Describe the change</strong><small>AI updates the blocks for you. The saved workflow still replays deterministically.</small></span></div>
             <textarea rows={3} autoFocus value={workflowAiRequest} placeholder="For example: Change the result limit from 5 to 10, then save it as research-results.json." onChange={(event) => setWorkflowAiRequest(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void editWorkflowWithAi(); }} />
@@ -1560,6 +1569,7 @@ export function AutomationStudio() {
       </div>}
       {pendingExecution && (() => {
         const trust = automationTrustSummary(pendingExecution.workflow);
+        const sharedBlock = sharedScriptBlock(pendingExecution.workflow);
         return <div className="modal-overlay trust-preview-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingExecution(undefined); }}>
           <section className="modal-card trust-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="trust-preview-title">
             <div className="trust-preview-title"><span><Icon name="checkmark.shield.fill" size={20} /></span><div><h2 id="trust-preview-title">Review this automation</h2><p>Nextbrowser will use the selected browser exactly as shown below.</p></div></div>
@@ -1567,7 +1577,8 @@ export function AutomationStudio() {
             <div className="trust-preview-effects">{trust.effects.map((effect) => <span key={effect} className={["external_upload", "authentication", "publication", "proxy_change"].includes(effect) ? "risk" : ""}><Icon name={["external_upload", "authentication", "publication", "proxy_change"].includes(effect) ? "exclamationmark.triangle.fill" : effect === "local_artifact" ? "tray.full.fill" : "checkmark.circle"} size={12} /> {trustEffectLabel(effect)}</span>)}</div>
             <ul>{trust.explanation.map((line) => <li key={line}>{line}</li>)}</ul>
             {trust.needsConfirmation && <p className="trust-preview-warning"><Icon name="exclamationmark.triangle.fill" size={13} /> This workflow may affect an account or send data to a website. Confirm only if every highlighted action is intended.</p>}
-            <div className="recording-review-actions"><button className="secondary" onClick={() => setPendingExecution(undefined)}>Cancel</button><button className="primary" onClick={() => { const pending = pendingExecution; setPendingExecution(undefined); void executeRecipe(pending.workflow, pending.sourceKind, pending.sourceId); }}><Icon name="play.fill" size={12} /> Start safely</button></div>
+            {sharedBlock && <p className="trust-preview-warning" role="alert"><Icon name="exclamationmark.triangle.fill" size={13} /> {sharedBlock}</p>}
+            <div className="recording-review-actions"><button className="secondary" onClick={() => setPendingExecution(undefined)}>Cancel</button><button className="primary" disabled={!!sharedBlock} title={sharedBlock} onClick={() => { const pending = pendingExecution; setPendingExecution(undefined); void executeRecipe(pending.workflow, pending.sourceKind, pending.sourceId); }}><Icon name="play.fill" size={12} /> Start safely</button></div>
           </section>
         </div>;
       })()}

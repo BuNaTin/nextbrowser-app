@@ -1,6 +1,7 @@
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
+const { tracedBackendFetch } = require("./backend-fetch.cjs");
 
 const DEFAULT_API_BASE_URL = "https://api.nextbrowser.com";
 
@@ -67,7 +68,7 @@ async function loadBackendConfig({
 
 async function sendNodeMavenInvite(deps = {}) {
   const { apiKey, baseURL } = await loadBackendConfig(deps);
-  const fetchImpl = deps.fetchImpl || fetch;
+  const fetchImpl = tracedBackendFetch(deps.fetchImpl);
   let response;
   try {
     response = await fetchImpl(`${baseURL}/v1/proxy/traffic/invite`, {

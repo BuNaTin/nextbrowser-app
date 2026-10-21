@@ -13,6 +13,7 @@ import { Icon } from "./Icon";
 import { SkillLogo } from "./SkillLogo";
 import { UserFacingError } from "./UserFacingError";
 import { WatchedProfilesPanel } from "./WatchedProfilesPanel";
+import { RunSkillSheet } from "./RunSkillSheet";
 
 export function SkillsView({ onOpenAgentSettings }: { onOpenAgentSettings: () => void }) {
   const s = useStore();
@@ -21,6 +22,7 @@ export function SkillsView({ onOpenAgentSettings }: { onOpenAgentSettings: () =>
   const [status, setStatus] = useState<Record<string, string>>({});
   const [scriptEditor, setScriptEditor] = useState<CustomScript | "new" | null>(null);
   const [skillRun, setSkillRun] = useState<BrowserWorkflowSkill | null>(null);
+  const [catalogRun, setCatalogRun] = useState<SkillEntry | null>(null);
   const [skillDetails, setSkillDetails] = useState<BrowserWorkflowSkill | null>(null);
   const [deleteRequest, setDeleteRequest] = useState<{ title: string; run: () => Promise<void> }>();
   const [deleting, setDeleting] = useState(false);
@@ -295,7 +297,7 @@ export function SkillsView({ onOpenAgentSettings }: { onOpenAgentSettings: () =>
                         <Icon name="person.crop.circle" size={13} /> Open
                       </button>
                     ) : (
-                      <button className="btn-bordered-prominent full" disabled={!ready} title={`Run ${e.title} in chat`} onClick={() => void s.useSkillInChat(e)}>
+                      <button className="btn-bordered-prominent full" disabled={!ready} title={`Run ${e.title} in chat`} onClick={() => setCatalogRun(e)}>
                         <Icon name="play.fill" size={13} /> Run
                       </button>
                     )
@@ -314,7 +316,7 @@ export function SkillsView({ onOpenAgentSettings }: { onOpenAgentSettings: () =>
                           className="btn-bordered full"
                           disabled={!ready}
                           title={`Run ${e.title} in chat`}
-                          onClick={() => s.useSkillInChat(e)}
+                          onClick={() => setCatalogRun(e)}
                         >
                           Run
                         </button>
@@ -462,6 +464,17 @@ export function SkillsView({ onOpenAgentSettings }: { onOpenAgentSettings: () =>
             const skill = skillRun;
             setSkillRun(null);
             void s.runLocalSkill(skill, task);
+          }}
+        />
+      )}
+      {catalogRun && (
+        <RunSkillSheet
+          entry={catalogRun}
+          onClose={() => setCatalogRun(null)}
+          onRun={(task) => {
+            const entry = catalogRun;
+            setCatalogRun(null);
+            void s.useSkillInChat(entry, task);
           }}
         />
       )}

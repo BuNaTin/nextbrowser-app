@@ -1,4 +1,5 @@
 const { loadBackendConfig } = require("./proxy-traffic.cjs");
+const { tracedBackendFetch } = require("./backend-fetch.cjs");
 
 const REQUEST_TIMEOUT_MS = 8_000;
 // Workspaces and projects live in the same service as the cloud skill registry.
@@ -27,7 +28,7 @@ function entityBackendURL(env = process.env) {
 }
 
 async function projectRequest(route, options = {}, deps = {}) {
-  const fetchImpl = deps.fetchImpl || fetch;
+  const fetchImpl = tracedBackendFetch(deps.fetchImpl);
   const { apiKey } = await loadBackendConfig(deps);
   const baseURL = entityBackendURL(deps.env);
   const { responseType = "json", jsonBody = true, timeoutMs = REQUEST_TIMEOUT_MS, ...fetchOptions } = options;

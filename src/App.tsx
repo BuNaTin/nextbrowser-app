@@ -33,7 +33,9 @@ import {
   previousAppTab,
   recordPreviousAppTab,
 } from "./lib/appNavigation";
-import { errorReference } from "./lib/userFacingError";
+import { errorReference, isBackgroundSyncFailure } from "./lib/userFacingError";
+import { setErrorReportingView, unexpectedErrorDetail } from "./lib/errorReporting";
+import { deviceDataAppSetup } from "./lib/deviceData";
 import { shouldDismissModalWithEscape } from "./lib/modalKeyboard";
 import { invoke, listen } from "./electronBridge";
 import { agentById } from "./agents";
@@ -42,6 +44,7 @@ import { UserFacingError } from "./components/UserFacingError";
 import { AgentConnectionGate } from "./components/AgentConnectionGate";
 import { WorkspaceSetupGate } from "./components/WorkspaceSetupGate";
 import { AgentInstallLink } from "./components/AgentInstallLink";
+import { DeviceDataSettings } from "./components/DeviceDataSettings";
 import { ConnectorsView } from "./components/ConnectorsView";
 import { AutomationStudio } from "./components/AutomationStudio";
 import { FeedbackModal } from "./components/FeedbackModal";
@@ -101,6 +104,12 @@ interface BrowserRuntimeUpdateInstallStatus {
 }
 
 const APP_UPDATE_ERROR = "We couldn't update the Nextbrowser app. Please retry.";
+const ERROR_REPORTING_HINT = "Sends crash and error details to Nextbrowser so problems can be fixed. Never includes page contents, typed text, cookies, or credentials.";
+
+interface ErrorReportingStatus {
+  enabled: boolean;
+  available: boolean;
+}
 
 const UI_SCALE_MIN = 0.8;
 const UI_SCALE_MAX = 1.3;
@@ -567,6 +576,20 @@ function SettingsModal({
   onRestoreFloatingScale: () => void;
 }) {
   const [agentLogoutPending, setAgentLogoutPending] = useState(false);
+  const [errorReporting, setErrorReporting] = useState<ErrorReportingStatus>();
+  useEffect(() => {
+    let active = true;
+    void invoke<ErrorReportingStatus>("error_reporting_status")
+      .then((status) => { if (active) setErrorReporting(status); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+  const changeErrorReporting = (enabled: boolean) => {
+    setErrorReporting((current) => current && { ...current, enabled });
+    void invoke<ErrorReportingStatus>("error_reporting_set", { enabled })
+      .then(setErrorReporting)
+      .catch(() => setErrorReporting((current) => current && { ...current, enabled: !enabled }));
+  };
   const nextctlVersion = useStore((s) => s.nextctlVersion);
   const agentId = useStore((s) => s.agentId);
   const agentReady = useStore((s) => s.agentReady());
@@ -652,6 +675,21 @@ function SettingsModal({
               )}
             </div>
           </div>
+          {errorReporting && (
+            <div className="settings-row">
+              <span className="muted small" title={ERROR_REPORTING_HINT}>Send error reports</span>
+              <label className="toggle" title={errorReporting.available ? ERROR_REPORTING_HINT : "Development builds do not send error reports."}>
+                <input
+                  type="checkbox"
+                  aria-label="Send error reports"
+                  checked={errorReporting.enabled}
+                  onChange={(event) => changeErrorReporting(event.target.checked)}
+                />
+                <span className="toggle-track"><span className="toggle-knob" /></span>
+              </label>
+            </div>
+          )}
+          <DeviceDataSettings />
           <div className="settings-row settings-update-row">
             <span className="muted small">App update</span>
             <div className="settings-update-cell">
@@ -989,14 +1027,23 @@ export function App() {
   const observedTab = useRef(tab);
   const pendingBackTarget = useRef<AppTab | null>(null);
   const [backTarget, setBackTarget] = useState<AppTab>();
+  // Error reports name the screen the user was on.
+  const errorReportingView = showOnboarding ? "onboarding" : checking || startupError ? "startup" : settingsOpen ? "settings" : tab;
+  useEffect(() => setErrorReportingView(errorReportingView), [errorReportingView]);
+  // Device data: the main process learns connected agent types and workspace
+  // and profile counts from here (compared as text so a reload with the same
+  // values does not resend them).
+  const appSetup = useStore((s) => JSON.stringify(deviceDataAppSetup(s) ?? null));
+  useEffect(() => {
+    const setup = JSON.parse(appSetup);
+    if (setup) void invoke("client_environment_app_setup", setup).catch(() => undefined);
+  }, [appSetup]);
   useEffect(() => {
     const showUnexpectedError = (event: ErrorEvent | PromiseRejectionEvent) => {
-      const detail = event instanceof PromiseRejectionEvent
-        ? event.reason instanceof Error ? event.reason.message : String(event.reason ?? "")
-        : event.message;
+      const detail = unexpectedErrorDetail(event);
       // Cloud project sync is best-effort. Authentication failures there are
       // not fatal app errors and should not cover the active chat.
-      if (/project sync failed\s*\(\d+\)|unauthorized.*project/i.test(detail)) {
+      if (isBackgroundSyncFailure(detail)) {
         console.warn("Background workspace sync failed:", detail);
         return;
       }
@@ -1793,6 +1840,7 @@ export function App() {
       {showOnboarding && <OnboardingView />}
       {!checking && agentReady && workspaceSetupRequired && workspaceSetupAuto === "failed" && <WorkspaceSetupGate />}
       {browserRuntimeInstall && !browserInstallHidden && <BrowserRuntimeInstallModal status={browserRuntimeInstall} onHide={() => setBrowserInstallHiddenKey(browserRuntimeInstallKey(browserRuntimeInstall))} onCancel={() => {
+        trackEvent("browser_runtime_download_stopped", { runtime: browserRuntimeInstall.runtime });
         if (browserRuntimeInstall.requestId) void invoke("nextctl_cancel", { requestId: browserRuntimeInstall.requestId });
         setBrowserRuntimeInstall(undefined);
       }} />}

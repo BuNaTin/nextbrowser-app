@@ -183,10 +183,11 @@ function createClientErrorReporter({
   platform = process.platform,
   now = () => Date.now(),
   random = Math.random,
-  // Pending reports must never keep a process alive on their own.
-  setTimer = (fn, ms) => {
+  // Pending reports must never keep a process alive on their own. The quit
+  // flush is the one exception: its bound is the reason the process waits.
+  setTimer = (fn, ms, { keepAlive = false } = {}) => {
     const timer = setTimeout(fn, ms);
-    timer.unref?.();
+    if (!keepAlive) timer.unref?.();
     return timer;
   },
   clearTimer = (timer) => clearTimeout(timer),
@@ -537,7 +538,7 @@ function createClientErrorReporter({
       let timer;
       await Promise.race([
         flush(),
-        new Promise((resolve) => { timer = setTimer(resolve, timeoutMs); }),
+        new Promise((resolve) => { timer = setTimer(resolve, timeoutMs, { keepAlive: true }); }),
       ]);
       clearTimer(timer);
       persistSync();

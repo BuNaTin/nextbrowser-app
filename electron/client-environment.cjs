@@ -476,6 +476,10 @@ function createClientEnvironment({
       }
     }
     const groups = enabledGroups(unsetOn);
+    // Nothing on and nothing stored for this account: a report would only
+    // create an empty install row for someone who never opted in, as everyone
+    // in a consent country is until they turn a group on.
+    if (!groups.length && !record?.groups.length) return;
     const sameGroups = !!record && sameKeys(record.groups, groups);
     const due = !sameGroups || now() - record.at >= config.reportIntervalMs;
     if (reason !== "toggle" && !due) return;

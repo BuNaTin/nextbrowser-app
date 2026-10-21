@@ -224,8 +224,8 @@ test("a group that is off is absent from the report and is never collected", asy
 test("unset groups follow the policy: off where consent is required, explicit choices win", async (t) => {
   const h = harness(t, { policy: { status: 200, body: { consent_required: true } } });
   await h.env.check("due");
-  assert.deepEqual(h.lastBody().groups, {}, "everything unset stays off");
-  assert.deepEqual(h.collected, [[]], "nothing is read from the device");
+  assert.equal(h.posts().length, 0, "nobody who never opted in gets an install row");
+  assert.deepEqual(h.collected, [], "nothing is read from the device");
   assert.deepEqual(h.env.status().groups, { locale: false, keyboard: false, device: false, app: false, network: false });
 
   h.env.setGroup("locale", true);
@@ -239,6 +239,20 @@ test("unset groups follow the policy: off where consent is required, explicit ch
   h.env.setGroup("app", false);
   await h.env.check("due");
   assert.equal(h.requests.filter((request) => request.url.endsWith("/policy")).length, before);
+});
+
+test("turning every group off sends one empty report that deletes the data, then nothing", async (t) => {
+  const h = harness(t);
+  await h.env.check("due");
+  assert.deepEqual(Object.keys(h.lastBody().groups), GROUPS);
+  for (const key of GROUPS) h.env.setGroup(key, false);
+  await h.env.check("toggle");
+  assert.equal(h.posts().length, 2);
+  assert.deepEqual(h.lastBody().groups, {}, "the backend deletes every group");
+  h.advance(2 * DAY);
+  await h.env.check("due");
+  await h.env.check("toggle");
+  assert.equal(h.posts().length, 2, "with nothing on and nothing stored there is nothing to report");
 });
 
 test("without a policy answer unset groups are off, but data the user never turned off is not deleted", async (t) => {

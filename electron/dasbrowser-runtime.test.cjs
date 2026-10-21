@@ -63,9 +63,13 @@ test("says what the Windows setup reported and where the app looked when no brow
 });
 
 test("lists the macOS locations the app checked", () => {
-  const message = dasbrowserNotFoundMessage({ platform: "darwin", homeDir: "/Users/tomasz", env: {}, runtimeRoot: "/Users/tomasz/.nextbrowser" });
-  assert.ok(message.includes("/Users/tomasz/.nextbrowser/data/Dasbrowser.app/Contents/MacOS/Dasbrowser"), message);
-  assert.ok(message.includes("/Applications/Dasbrowser.app/Contents/MacOS/Dasbrowser"), message);
+  // The message names paths the way the host spells them, so the expected
+  // locations are built with the host's path module, as the Windows test does.
+  const home = path.join(path.sep, "Users", "tomasz");
+  const runtimeRoot = path.join(home, ".nextbrowser");
+  const message = dasbrowserNotFoundMessage({ platform: "darwin", homeDir: home, env: {}, runtimeRoot });
+  assert.ok(message.includes(path.resolve(runtimeRoot, "data", "Dasbrowser.app", "Contents", "MacOS", "Dasbrowser")), message);
+  assert.ok(message.includes(path.resolve(path.sep, "Applications", "Dasbrowser.app", "Contents", "MacOS", "Dasbrowser")), message);
 });
 
 test("reports the Windows setup exit code instead of a bare installation failure", () => {

@@ -4508,6 +4508,45 @@ code { background: var(--surface-4); padding: 1px 5px; border-radius: 4px; }
 }
 .settings-runtime-empty { padding: 12px; }
 .settings-runtime-note { margin-top: 7px; line-height: 1.35; }
+.settings-device-data { padding: 2px 0 8px; }
+.settings-device-data-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 32px;
+}
+.settings-device-data-head a { color: var(--accent-text); text-decoration: none; }
+.settings-device-data-head a:hover { text-decoration: underline; }
+.settings-device-data-note { margin-bottom: 8px; line-height: 1.35; }
+.settings-device-data-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.settings-device-data-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  padding: 5px 10px;
+}
+.settings-device-data-row + .settings-device-data-row { border-top: 1px solid var(--line); }
+.settings-device-data-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.settings-device-data-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .settings-link {
   width: 100%;
   min-height: 34px;

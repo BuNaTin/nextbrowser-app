@@ -61,6 +61,37 @@ Repeats of the same error are folded into one report with a count. A launch send
 
 Turn reports off with **Settings → Send error reports**. <code>NEXTBROWSER_ERROR_REPORTING=0</code> disables them in any build; development and unpackaged builds send nothing unless <code>NEXTBROWSER_ERROR_REPORTING=1</code>. Unsent reports wait in <code>client-errors/</code> in the application-data directory (at most 200, for up to seven days), and the reporter's own failures are logged to <code>client-errors/reporter.log</code> there.
 
+## Device data
+
+While you are signed in, the desktop app sends a snapshot of the computer and app it runs on to the Nextbrowser backend (<code>POST /v1/client-environment</code> on the same API base as error reports). Nextbrowser uses it to answer support requests faster, to tune browser fingerprints to real environments, and to decide which systems, languages, and regions to support. The snapshot belongs to your account and to this installation (the same random install id as error reports).
+
+The data comes in five groups. Each group is a separate switch under **Settings → Device data**:
+
+| Group | Fields |
+| --- | --- |
+| Language and region | OS interface language, preferred languages, regional format (for example <code>de-DE</code>), time zone, and UTC offset in minutes. |
+| Keyboard layouts | Keyboard layouts and input methods enabled in the OS settings (id, name, language) and the default one. The app reads the list of layouts only, never keystrokes or typed text. |
+| Device | OS family, OS name, version and build, architecture (an emulated app reports the machine's own architecture), CPU model and number of logical cores, memory size, GPUs (name, vendor, driver version), and displays (resolution in physical pixels, scale factor, which one is primary). |
+| App setup | App, nbc, and installed browser runtime versions, which agent types are connected (for example <code>claude</code>, <code>codex</code>), whether a Multilogin account is connected, and the number of workspaces and profiles. Never workspace, profile, or account names. |
+| Network location | Country, region, city, and internet provider. The backend looks them up from the address the report comes from; the IP address itself is not stored or logged. |
+
+Where the values come from: Electron and Node.js system APIs on every platform; on Windows also the language list, keyboard layout names, version and update revision from the registry, and video controllers (one read-only PowerShell call); on macOS <code>defaults read com.apple.HIToolbox</code> and <code>sw_vers</code>; on Linux <code>/etc/os-release</code>, GNOME input sources, or <code>setxkbmap -query</code>. Only the groups that are on are read.
+
+When it is sent:
+
+- shortly after launch, once you are signed in, if 24 hours have passed since the last report for your account;
+- while the app is running, an hourly check sends a report when 24 hours have passed and something changed;
+- at once when you change a switch, so turning a group off deletes its data right away (if you are signed out then, at your next sign-in);
+- at once after you sign in to an account this installation has not reported for. The 24-hour clock is kept per account; the app stores only a hash of the account key.
+
+A report always carries every group that is on. A group that is missing is off, and the backend deletes what it stored for that group for your account and this installation. Installations that have not reported for 12 months are deleted.
+
+All groups are on by default. In countries where the law requires consent before reading such data from a device (by default the EU and the EEA, decided by the backend from the request's location), every group stays off until you turn it on; the app asks the backend's <code>GET /v1/client-environment/policy</code> for groups you have not set yourself, and if it cannot get an answer those groups count as off for that attempt. Your own choice always wins.
+
+Device data never includes the computer name, the OS user name, file paths, installed programs other than the browser runtimes listed above, browser history, clipboard contents, keystrokes, or typed text. See the [Privacy Policy](https://nextbrowser.com/privacy-policy).
+
+Development and unpackaged builds send no device data unless <code>NEXTBROWSER_CLIENT_ENVIRONMENT=1</code>, and <code>NEXTBROWSER_CLIENT_ENVIRONMENT=0</code> turns it off in any build. Your choices are kept in <code>client-environment/state.json</code> in the application-data directory, and failures (never the collected values) are logged to <code>client-environment/report.log</code> there.
+
 ## Development
 
 Install dependencies and start the Electron/Vite development process:

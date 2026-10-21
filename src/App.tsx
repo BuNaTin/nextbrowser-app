@@ -35,6 +35,7 @@ import {
 } from "./lib/appNavigation";
 import { errorReference, isBackgroundSyncFailure } from "./lib/userFacingError";
 import { setErrorReportingView, unexpectedErrorDetail } from "./lib/errorReporting";
+import { deviceDataAppSetup } from "./lib/deviceData";
 import { shouldDismissModalWithEscape } from "./lib/modalKeyboard";
 import { invoke, listen } from "./electronBridge";
 import { agentById } from "./agents";
@@ -43,6 +44,7 @@ import { UserFacingError } from "./components/UserFacingError";
 import { AgentConnectionGate } from "./components/AgentConnectionGate";
 import { WorkspaceSetupGate } from "./components/WorkspaceSetupGate";
 import { AgentInstallLink } from "./components/AgentInstallLink";
+import { DeviceDataSettings } from "./components/DeviceDataSettings";
 import { ConnectorsView } from "./components/ConnectorsView";
 import { AutomationStudio } from "./components/AutomationStudio";
 import { FeedbackModal } from "./components/FeedbackModal";
@@ -687,6 +689,7 @@ function SettingsModal({
               </label>
             </div>
           )}
+          <DeviceDataSettings />
           <div className="settings-row settings-update-row">
             <span className="muted small">App update</span>
             <div className="settings-update-cell">
@@ -1027,6 +1030,14 @@ export function App() {
   // Error reports name the screen the user was on.
   const errorReportingView = showOnboarding ? "onboarding" : checking || startupError ? "startup" : settingsOpen ? "settings" : tab;
   useEffect(() => setErrorReportingView(errorReportingView), [errorReportingView]);
+  // Device data: the main process learns connected agent types and workspace
+  // and profile counts from here (compared as text so a reload with the same
+  // values does not resend them).
+  const appSetup = useStore((s) => JSON.stringify(deviceDataAppSetup(s) ?? null));
+  useEffect(() => {
+    const setup = JSON.parse(appSetup);
+    if (setup) void invoke("client_environment_app_setup", setup).catch(() => undefined);
+  }, [appSetup]);
   useEffect(() => {
     const showUnexpectedError = (event: ErrorEvent | PromiseRejectionEvent) => {
       const detail = unexpectedErrorDetail(event);

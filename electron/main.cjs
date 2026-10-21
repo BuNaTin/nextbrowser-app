@@ -3,7 +3,7 @@ const { mcpProfileScope } = require("./mcp-profile-scope.cjs");
 const { addChatWorkspaceProfile } = require("./chat-profile-scope.cjs");
 const { requireVerificationCapableCLI, verificationFailureDialogOptions, verificationFailureDialogChoice } = require("./verification-policy.cjs");
 const { agentLoginStatus } = require("./agent-login-status.cjs");
-const { app, BrowserWindow, ipcMain, shell, nativeImage, nativeTheme, dialog, Menu, clipboard, safeStorage } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, nativeImage, nativeTheme, dialog, Menu, clipboard, safeStorage, screen } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { createAppUpdateDownload } = require("./app-update-download.cjs");
 const { execFileSync, spawn } = require("node:child_process");
@@ -128,6 +128,8 @@ const {
 } = require("./dasbrowser-runtime.cjs");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const { createClientErrorReporter, errorReportingAllowed } = require("./client-error-reporter.cjs");
+const { clientEnvironmentAllowed, createClientEnvironment } = require("./client-environment.cjs");
+const { createEnvironmentCollector } = require("./client-environment-collect.cjs");
 const { describeBackendRequest, setBackendClientInfo, setBackendRequestObserver, tracedBackendFetch } = require("./backend-fetch.cjs");
 const { describeNbcResult, isNextctlBinary } = require("./nbc-failure-report.cjs");
 
@@ -188,17 +190,18 @@ const nextctlAutomationTraceSupport = new Map();
 // agent request being handled is kept per async call chain, so a failure deep
 // inside it is reported with the action that led to it.
 const reportingContext = new AsyncLocalStorage();
+const appBuildVersion = feedbackBuildContext({ app, execFileSync }).app_version;
 const errorReporter = createClientErrorReporter({
   dir: path.join(app.getPath("userData"), "client-errors"),
   allowed: errorReportingAllowed({ isDevBuild }),
   client: {
-    version: feedbackBuildContext({ app, execFileSync }).app_version,
+    version: appBuildVersion,
     platform: process.platform,
     arch: process.arch,
     os_version: systemVersion(),
   },
   homeDir: os.homedir(),
-  resolveEndpoint: errorReportingEndpoint,
+  resolveEndpoint: runtimeBackendEndpoint,
   getAction: () => reportingContext.getStore()?.action,
 });
 const backendFetch = tracedBackendFetch();
@@ -207,6 +210,23 @@ setBackendRequestObserver((request) => {
   const { breadcrumb, event } = describeBackendRequest(request);
   errorReporter.breadcrumb("api", breadcrumb);
   if (event) errorReporter.capture(event);
+});
+// Device data (see client-environment.cjs): Settings → Device data groups,
+// sent for the signed-in account under the error reporter's install id.
+const environmentCollector = createEnvironmentCollector({
+  app,
+  screen,
+  appVersion: appBuildVersion,
+  installedRuntimes: installedBrowserRuntimes,
+  multiloginConnected,
+});
+const clientEnvironment = createClientEnvironment({
+  dir: path.join(app.getPath("userData"), "client-environment"),
+  allowed: clientEnvironmentAllowed({ isDevBuild }),
+  installId: () => errorReporter.installId,
+  resolveEndpoint: runtimeBackendEndpoint,
+  collect: environmentCollector.collect,
+  fetchImpl: backendFetch,
 });
 let appQuitting = false;
 let quittingForUpdate = false;
@@ -219,9 +239,11 @@ function systemVersion() {
     return os.release();
   }
 }
-// Reports go to the same API base as the app's other runtime calls, signed
-// with the paired account's key when there is one and anonymous otherwise.
-async function errorReportingEndpoint() {
+// Error reports and device data go to the same API base as the app's other
+// runtime calls, signed with the paired account's key when there is one. An
+// empty key means signed out: error reports then go anonymously, device data
+// not at all.
+async function runtimeBackendEndpoint() {
   const env = {
     ...process.env,
     NEXTBROWSER_CONFIG_DIR: path.join(nextbrowserRuntimeRoot(), "config"),
@@ -1395,6 +1417,33 @@ async function installedDasbrowserVersion() {
       : "";
   }
 }
+// Installed browser runtimes and their versions, for device data. Reads the
+// same local release metadata as the update check, without the network.
+async function installedBrowserRuntimes() {
+  const runtimeRoot = nextbrowserRuntimeRoot();
+  const clawbrowserExecutable = resolveBrowserRuntime({ platform: process.platform, homeDir: home(), env: process.env, runtimeRoot });
+  const [clawbrowser, camoufox, dasbrowser] = await Promise.all([
+    clawbrowserExecutable ? installedClawbrowserVersion(runtimeRoot, clawbrowserExecutable) : "",
+    installedCamoufoxVersion(runtimeRoot),
+    installedDasbrowserVersion(),
+  ]);
+  const installed = {
+    clawbrowser: !!clawbrowserExecutable,
+    camoufox: !!camoufox,
+    dasbrowser: !!resolveDasbrowserRuntime(dasbrowserRuntimeOptions()),
+  };
+  const versions = { clawbrowser, camoufox, dasbrowser };
+  return Object.keys(installed)
+    .filter((name) => installed[name])
+    .map((name) => ({ name, ...(versions[name] ? { version: versions[name] } : {}) }));
+}
+// Whether a Multilogin account is connected, once the app has loaded its
+// credential; device data never triggers that load itself.
+async function multiloginConnected() {
+  if (!multiloginCredentialLoadPromise) return undefined;
+  await multiloginCredentialLoadPromise;
+  return Boolean(multiloginAutomationToken);
+}
 async function checkForBrowserRuntimeUpdates() {
   if (browserRuntimeUpdateCheckPromise) return browserRuntimeUpdateCheckPromise;
   const clawbrowserExecutable = resolveBrowserRuntime({ platform: process.platform, homeDir: home(), env: process.env, runtimeRoot: nextbrowserRuntimeRoot() });
@@ -2019,6 +2068,7 @@ async function invokeCommand(command, args = {}, sender) {
       const bin = await resolveOrInstallNextctl(); if (!bin) throw new Error("not found");
       const version = await readCLIVersion(bin, run);
       errorReporter.setNbcVersion(version);
+      environmentCollector.setNbcVersion(version);
       return version;
     }
     case "nextctl_supports_skill": { const bin = await resolveOrInstallNextctl(); if (!bin) throw new Error("not found"); return nextctlHasSkill(bin); }
@@ -2096,6 +2146,13 @@ async function invokeCommand(command, args = {}, sender) {
     case "app_platform": return { platform: process.platform, arch: process.arch };
     case "error_reporting_status": return errorReporter.status();
     case "error_reporting_set": return errorReporter.setUserEnabled(args.enabled !== false);
+    case "client_environment_status": return clientEnvironment.status();
+    case "client_environment_set": return clientEnvironment.setGroup(String(args.group || ""), args.enabled !== false);
+    case "client_environment_app_setup": {
+      environmentCollector.setAppSetup(args);
+      clientEnvironment.checkSoon();
+      return null;
+    }
     case "app_focus": {
       focusMainWindow();
       setTimeout(() => focusMainWindow(), 400);
@@ -3031,6 +3088,7 @@ if (!gotLock) {
     for (const arg of process.argv) handleDeepLink(arg);
     startAutoUpdater();
     startBrowserRuntimeUpdateChecks();
+    clientEnvironment.start();
     app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });
 }
@@ -3052,6 +3110,7 @@ app.on("before-quit", (event) => {
   }
   if (browserRuntimeUpdateTimer) clearInterval(browserRuntimeUpdateTimer);
   if (appUpdateTimer) clearInterval(appUpdateTimer);
+  clientEnvironment.stop();
   for (const socket of remoteSignalSockets.values()) socket.close();
   remoteSignalSockets.clear();
   for (const child of children.values()) child.kill();

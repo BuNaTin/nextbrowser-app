@@ -650,4 +650,6 @@ module.exports = {
   errorReportingAllowed,
   fingerprintFor,
   parseRetryAfter,
+  readJSON,
+  writeFileAtomicSync,
 };

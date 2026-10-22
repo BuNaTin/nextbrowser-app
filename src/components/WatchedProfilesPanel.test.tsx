@@ -76,3 +76,24 @@ describe("a monitoring-only skill", () => {
     expect(html).toContain("Profiles to watch");
   });
 });
+
+describe("the sign-in step line", () => {
+  const site: SkillEntry = {
+    id: "site", title: "Site", subtitle: "example.com", selector: { kind: "domain", value: "example.com" },
+    category: "social", categoryTitle: "Social", categoryIcon: "globe", categoryOrder: 1,
+    watchlist: { title: "Watched accounts", placeholder: "account", signIn: { url: "https://example.com/home", probe: "({})" } },
+  };
+  const renderSite = () => renderToStaticMarkup(<WatchedProfilesPanel entry={site} onClose={() => {}} />);
+
+  it("still shows why Open or Check failed after the action ended", () => {
+    Object.assign(fixture.state, { watchlistBusy: undefined, watchlistStepFor: "site", watchlistStep: "The page could not be opened." });
+    expect(renderSite()).toContain("The page could not be opened.");
+  });
+
+  it("shows another skill's line on that skill only", () => {
+    Object.assign(fixture.state, { watchlistStepFor: "other", watchlistStep: "The page could not be opened." });
+    const html = renderSite();
+    expect(html).not.toContain("The page could not be opened.");
+    expect(html).toContain("Sign-in to example.com not checked yet");
+  });
+});

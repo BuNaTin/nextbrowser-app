@@ -679,7 +679,11 @@ interface State {
   watchlistSignIns: Record<string, WatchedPublisher>;
   /** Skill id currently doing browser work from its panel, if any. */
   watchlistBusy?: string;
+  /** The panel's step line: progress while busy, then a failure until the
+   *  next Open or Check. */
   watchlistStep?: string;
+  /** The skill id the step line belongs to. */
+  watchlistStepFor?: string;
   xReplyState: XReplyState;
   xReplyBusy: boolean;
   xReplyStep?: string;
@@ -1781,6 +1785,16 @@ let xReplyDraftReplyId: string | undefined;
 function watchlistSignInFor(state: State, entry: SkillEntry) {
   const transport = state.watchlistTransportFor(entry);
   return transport.signIn ?? entry.watchlist?.signIn;
+}
+
+const PICK_CLOUD_PHONE_FIRST = "Pick a cloud phone first";
+
+/** Shows the cloud-phone hint on a skill's step line for a few seconds. */
+function hintPickCloudPhone(entry: SkillEntry): void {
+  useStore.setState({ watchlistStep: PICK_CLOUD_PHONE_FIRST, watchlistStepFor: entry.id });
+  setTimeout(() => {
+    if (useStore.getState().watchlistStep === PICK_CLOUD_PHONE_FIRST) useStore.setState({ watchlistStep: undefined });
+  }, 4000);
 }
 
 /** watchlistBrowser binds the CLI to the profile this skill was given, so a
@@ -7257,31 +7271,31 @@ export const useStore = create<State>((set, get) => {
       // A phone has no page to open: the way in is the screen itself, so this
       // starts Live View and the user signs in on the phone with their hands.
       if (!device) {
-        set({ watchlistStep: "Pick a cloud phone first" });
-        setTimeout(() => set({ watchlistStep: undefined }), 4000);
+        hintPickCloudPhone(entry);
         return;
       }
-      set({ watchlistBusy: entry.id, watchlistStep: `Opening ${device.name}` });
+      set({ watchlistBusy: entry.id, watchlistStep: `Opening ${device.name}`, watchlistStepFor: entry.id });
       try {
         await get().startRemoteStream({ runtime: "multilogin", selection: device });
+        set({ watchlistStep: undefined });
       } catch (error) {
+        // The failure stays on the panel until the next Open or Check.
         set({ watchlistStep: friendlyXReplyError(error) });
       } finally {
         set({ watchlistBusy: undefined });
-        setTimeout(() => set({ watchlistStep: undefined }), 4000);
       }
       return;
     }
-    set({ watchlistBusy: entry.id, watchlistStep: `Opening ${selectorTargetHost(entry.selector) || signIn.url}` });
+    set({ watchlistBusy: entry.id, watchlistStep: `Opening ${selectorTargetHost(entry.selector) || signIn.url}`, watchlistStepFor: entry.id });
     try {
       const browser = await watchlistBrowser(entry, (step) => set({ watchlistStep: step }));
       await browser.open(signIn.url);
+      set({ watchlistStep: undefined });
     } catch (error) {
       set({ watchlistStep: friendlyXReplyError(error) });
       return;
     } finally {
       set({ watchlistBusy: undefined });
-      setTimeout(() => set({ watchlistStep: undefined }), 4000);
     }
     await get().checkWatchlistSignIn(entry);
   },
@@ -7295,11 +7309,10 @@ export const useStore = create<State>((set, get) => {
     if (get().watchlistBusy) return get().watchlistSignIns[entry.id]?.signedIn === true;
     const device = get().watchlistDevices[entry.id];
     if (signInIsForDevice(signIn) && !device) {
-      set({ watchlistStep: "Pick a cloud phone first" });
-      setTimeout(() => set({ watchlistStep: undefined }), 4000);
+      hintPickCloudPhone(entry);
       return false;
     }
-    set({ watchlistBusy: entry.id, watchlistStep: "Checking the signed-in account" });
+    set({ watchlistBusy: entry.id, watchlistStep: "Checking the signed-in account", watchlistStepFor: entry.id });
     try {
       let probed: { signed_in?: boolean; handle?: string };
       if (signInIsForDevice(signIn)) {
@@ -7320,15 +7333,15 @@ export const useStore = create<State>((set, get) => {
         signedIn: probed?.signed_in === true,
         checkedAt: now(),
       };
-      set({ watchlistSignIns: { ...get().watchlistSignIns, [entry.id]: publisher } });
+      set({ watchlistSignIns: { ...get().watchlistSignIns, [entry.id]: publisher }, watchlistStep: undefined });
       trackEvent("watchlist_sign_in_checked", { skill: entry.id, signed_in: publisher.signedIn === true });
       return publisher.signedIn === true;
     } catch (error) {
+      // The failure stays on the panel until the next Open or Check.
       set({ watchlistStep: friendlyXReplyError(error) });
       return false;
     } finally {
       set({ watchlistBusy: undefined });
-      setTimeout(() => set({ watchlistStep: undefined }), 4000);
     }
   },
 

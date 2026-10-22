@@ -22,19 +22,21 @@ describe("AppErrorBoundary", () => {
     boundary.state = AppErrorBoundary.getDerivedStateFromError(error);
     boundary.componentDidCatch(error, { componentStack: "\n    at ChatView\n    at App" });
 
+    const reference = boundary.state.reference ?? "";
+    expect(reference).toMatch(new RegExp(`^${errorReference("Cannot render ChatView")}-[0-9A-F]{4}$`));
     expect(reports).toHaveLength(1);
     expect(reports[0]).toMatchObject({
       kind: "react_render",
       name: "Error",
       message: "Cannot render ChatView",
-      context: { boundary: "app_root", ref: errorReference("Cannot render ChatView") },
+      context: { boundary: "app_root", ref: reference },
     });
     expect(reports[0].stack).toContain("Component stack:");
     expect(reports[0].stack).toContain("at ChatView");
 
     const html = renderToStaticMarkup(<>{boundary.render()}</>);
     expect(html).toContain('role="alert"');
-    expect(html).toContain(`Ref: ${errorReference("Cannot render ChatView")}`);
+    expect(html).toContain(`Ref: ${reference}`);
     expect(html).toContain("Reload");
   });
 });

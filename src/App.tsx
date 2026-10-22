@@ -33,8 +33,8 @@ import {
   previousAppTab,
   recordPreviousAppTab,
 } from "./lib/appNavigation";
-import { errorReference, isBackgroundSyncFailure } from "./lib/userFacingError";
-import { setErrorReportingView, unexpectedErrorDetail } from "./lib/errorReporting";
+import { isBackgroundSyncFailure } from "./lib/userFacingError";
+import { setErrorReportingView, unexpectedErrorDetail, unexpectedErrorReference } from "./lib/errorReporting";
 import { deviceDataAppSetup } from "./lib/deviceData";
 import { shouldDismissModalWithEscape } from "./lib/modalKeyboard";
 import { invoke, listen } from "./electronBridge";
@@ -1048,7 +1048,7 @@ export function App() {
         return;
       }
       const normalized = detail.trim() || "Unknown renderer error";
-      const reference = errorReference(normalized);
+      const reference = unexpectedErrorReference(event);
       console.error(`[${reference}] Unexpected renderer error:`, normalized);
       setUnexpectedError({ reference, detail: normalized });
     };

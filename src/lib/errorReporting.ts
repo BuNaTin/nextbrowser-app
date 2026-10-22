@@ -1,4 +1,4 @@
-import { errorReference, isBackgroundSyncFailure } from "./userFacingError";
+import { incidentReference, isBackgroundSyncFailure } from "./userFacingError";
 
 // Renderer half of client error reporting. Errors and breadcrumbs go to the
 // main process over the preload bridge; the main process scrubs, folds,
@@ -46,6 +46,8 @@ let windowStartedAt = 0;
 let reportsInWindow = 0;
 // A Ref names one incident, however many places show it.
 const reportedRefs = new Set<string>();
+// The notice and the report of one uncaught error are made by two listeners.
+const unexpectedErrorRefs = new WeakMap<object, string>();
 
 function bridge() {
   return typeof window === "undefined" ? undefined : window.nextbrowser;
@@ -93,9 +95,14 @@ export function unexpectedErrorDetail(event: ErrorEvent | PromiseRejectionEvent)
   return event.message;
 }
 
-/** The Ref shown with the "Unexpected app error" notice for the same failure. */
-export function unexpectedErrorReference(detail: string): string {
-  return errorReference(detail.trim() || "Unknown renderer error");
+/** The Ref of an uncaught error: the same for its "Unexpected app error" notice and its report. */
+export function unexpectedErrorReference(event: ErrorEvent | PromiseRejectionEvent): string {
+  let ref = unexpectedErrorRefs.get(event);
+  if (!ref) {
+    ref = incidentReference(unexpectedErrorDetail(event).trim() || "Unknown renderer error");
+    unexpectedErrorRefs.set(event, ref);
+  }
+  return ref;
 }
 
 /** Hands one report to the main process, within the renderer's rate limit. */
@@ -166,7 +173,7 @@ export function installErrorReporting(target: Window = window): () => void {
     const detail = unexpectedErrorDetail(event);
     if (IGNORED_MESSAGES.test(detail) || isBackgroundSyncFailure(detail)) return;
     reportRendererError("exception", event.error ?? event.message, {
-      ref: unexpectedErrorReference(detail),
+      ref: unexpectedErrorReference(event),
       ...(event.filename ? { source_file: event.filename, line: String(event.lineno || 0), column: String(event.colno || 0) } : {}),
     });
   };
@@ -175,7 +182,7 @@ export function installErrorReporting(target: Window = window): () => void {
     // Background project sync failures are already handled (and their 5xx
     // reported with a trace id by the main process).
     if (isBackgroundSyncFailure(detail)) return;
-    reportRendererError("unhandled_rejection", event.reason, { ref: unexpectedErrorReference(detail) });
+    reportRendererError("unhandled_rejection", event.reason, { ref: unexpectedErrorReference(event) });
   };
   target.addEventListener("error", onError);
   target.addEventListener("unhandledrejection", onRejection);

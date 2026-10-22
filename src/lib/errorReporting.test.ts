@@ -59,8 +59,9 @@ describe("renderer error reporting", () => {
       message: error.message,
       view: "chat",
       action: "chat_request_submitted",
-      context: { ref: errorReference(`Uncaught ${error.name}: ${error.message}`), source_file: "file:///app/dist/assets/index.js", line: "10", column: "4" },
+      context: { source_file: "file:///app/dist/assets/index.js", line: "10", column: "4" },
     });
+    expect(report.context?.ref).toMatch(new RegExp(`^${errorReference(`Uncaught ${error.name}: ${error.message}`)}-[0-9A-F]{4}$`));
     expect(report.stack).toContain("TypeError");
     expect(env.crumbs).toEqual([
       { category: "navigation", message: "chat" },
@@ -74,9 +75,17 @@ describe("renderer error reporting", () => {
     installErrorReporting(env.page as unknown as Window);
     env.listeners.get("unhandledrejection")?.({ reason: new Error("Project sync failed (401).") });
     env.listeners.get("error")?.({ message: "ResizeObserver loop completed with undelivered notifications.", error: null });
-    env.listeners.get("unhandledrejection")?.({ reason: new Error("socket closed") });
+    const rejection = { reason: new Error("socket closed") };
+    env.listeners.get("unhandledrejection")?.(rejection);
     expect(env.reports).toHaveLength(1);
-    expect(env.reports[0]).toMatchObject({ kind: "unhandled_rejection", message: "socket closed", context: { ref: unexpectedErrorReference("socket closed") } });
+    // The notice for the same event shows the Ref the report carries.
+    expect(env.reports[0]).toMatchObject({
+      kind: "unhandled_rejection",
+      message: "socket closed",
+      context: { ref: unexpectedErrorReference(rejection as unknown as PromiseRejectionEvent) },
+    });
+    expect(unexpectedErrorReference({ reason: new Error("socket closed") } as unknown as PromiseRejectionEvent))
+      .not.toBe(env.reports[0].context?.ref);
   });
 
   it("never serializes non-Error values that may hold app data", () => {

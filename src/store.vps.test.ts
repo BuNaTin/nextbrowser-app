@@ -476,9 +476,9 @@ describe("VPS execution target isolation", () => {
 
       const reply = useStore.getState().conversations[0].messages[1];
       expect(reply.status).toBe("failed");
-      expect(reply.text).toMatch(/We couldn't start the agent\. Ref: NB-[A-F0-9]{8}$/);
+      expect(reply.text).toMatch(/We couldn't start the agent\. Ref: NB-[A-F0-9]{8}-[A-F0-9]{4}$/);
       expect(reply.text).not.toContain("ENOENT");
-      const ref = reply.text.match(/NB-[A-F0-9]{8}/)?.[0];
+      const ref = reply.text.match(/NB-[A-F0-9]{8}-[A-F0-9]{4}/)?.[0];
       expect(consoleError).toHaveBeenCalledWith(`[AGENT_START_FAILED] ${ref} codex agent_run`, cause);
     } finally {
       consoleError.mockRestore();

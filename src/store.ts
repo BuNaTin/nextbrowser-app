@@ -95,7 +95,7 @@ import { trafficGateState } from "./lib/trafficGate";
 import { activeAutomationRecording, clearActiveAutomationRecording } from "./lib/automationRecording";
 import { clearActiveAutomationExecution } from "./lib/automationExecution";
 import { setAnalyticsUserId, trackEvent, trackScreenView, trackTiming } from "./lib/analytics";
-import { actionFailureMessage, agentFailureDetail, errorReference, internalError } from "./lib/userFacingError";
+import { actionFailureMessage, agentFailureDetail, errorRefsIn, internalError } from "./lib/userFacingError";
 import { agentEmptyReplyMessage } from "./lib/agentRunResult";
 import { isBrowserVerificationFailure, userFacingBrowserError } from "./lib/userFacingBrowserError";
 import {
@@ -3271,13 +3271,10 @@ export const useStore = create<State>((set, get) => {
       await finishAgentRun(item.replyId, result);
     } catch (error) {
       // The reply shows only the reference; keep the cause for support.
-      console.error(`[AGENT_START_FAILED] ${errorReference("AGENT_START_FAILED")} ${agentId} ${runStage}`, error);
+      const failure = internalError("We couldn't start the agent.", "AGENT_START_FAILED");
+      console.error(`[AGENT_START_FAILED] ${errorRefsIn(failure).pop()} ${agentId} ${runStage}`, error);
       replyExecutionTargets.delete(item.replyId);
-      get().appendToMessage(
-        item.conversationId,
-        item.replyId,
-        `\n${internalError("We couldn't start the agent.", "AGENT_START_FAILED")}`,
-      );
+      get().appendToMessage(item.conversationId, item.replyId, `\n${failure}`);
       get().setMessageStatus(item.conversationId, item.replyId, "failed");
       trackEvent("agent_turn_spawn_failed", { agent: agentId, stage: runStage });
       set((s) => ({

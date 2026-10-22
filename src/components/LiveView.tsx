@@ -62,6 +62,8 @@ export function LiveView({ active }: { active: boolean }) {
   const [streamInfo, setStreamInfo] = useState<RemoteStreamInfo | null>(null);
   const [state, setState] = useState<LiveState>("idle");
   const [error, setError] = useState("");
+  // Made once: every Ref names one incident, so a render must not mint a new one.
+  const [connectFailure] = useState(() => internalError("We couldn't connect Live View.", "LIVE_VIEW_CONNECT_FAILED"));
   const [inputWarning, setInputWarning] = useState("");
   const [remoteTabs, setRemoteTabs] = useState<RemoteLiveTab[]>([]);
   const [pendingRemoteTab, setPendingRemoteTab] = useState("");
@@ -613,7 +615,7 @@ export function LiveView({ active }: { active: boolean }) {
             <Icon name="exclamationmark.triangle.fill" size={32} className="warn" />
             <p>
               <UserFacingError
-                message={error || internalError("We couldn't connect Live View.", "LIVE_VIEW_CONNECT_FAILED")}
+                message={error || connectFailure}
                 surface="live_view"
               />
             </p>

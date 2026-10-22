@@ -43,6 +43,10 @@ checklist says so.
 | `E2E_AGENT` | The agent to test in chat and terminal (`claude`, `codex`); the connected one by default. |
 | `E2E_SECOND_ACCOUNT` | Set when a second account can sign in during the account step. |
 | `E2E_RESTART_CMD` | A command that quits and starts the app again with the same flags, for the restart step. |
+| `E2E_MANUAL_PROXY_COUNTRY` | The country the manual proxy exits from, when its test does not show one. |
+| `E2E_AGENT_RELOGIN` | Set when a person is at the machine to finish the agent's browser sign-in after the sign-out step. |
+| `E2E_ALLOW_DOWNGRADE` | Set to let the settings scenario have the agent install an older nextctl and toolsets, then update them from the app. |
+| `E2E_FEEDBACK_LOG_CMD` | Like `E2E_REPORTS_CMD`, for the log of the service that receives feedback (core.nextbrowser.com/signal-router); without it the Slack check is blocked. |
 | `E2E_FLUSH_WAIT_MS` | How long to wait for the app's last batch of reports (45 s). |
 
 A step is **blocked**, not failed, when it needs something this machine does not

@@ -11,7 +11,10 @@ const { createScrubber, normalizeMessage, normalizeStackFrames, truncateBytes } 
 
 const SOURCES = new Set(["renderer", "main", "nbc", "agent"]);
 const KINDS = new Set(["exception", "unhandled_rejection", "react_render", "api_error", "process_gone", "command_failed"]);
-const RENDERER_KINDS = new Set(["exception", "unhandled_rejection", "react_render"]);
+// command_failed from the renderer is an error the app showed the user
+// (src/lib/errorReporting.ts reportUserFacingError). It carries identifiers
+// only; see userFacingFailure below.
+const RENDERER_KINDS = new Set(["exception", "unhandled_rejection", "react_render", "command_failed"]);
 const BREADCRUMB_CATEGORIES = new Set(["navigation", "ipc", "api", "ui", "nbc"]);
 // The renderer only reports what it saw: where the user went and what they
 // clicked. IPC, API and nbc breadcrumbs are recorded by the main process.
@@ -19,6 +22,11 @@ const RENDERER_BREADCRUMB_CATEGORIES = new Set(["navigation", "ui"]);
 // View names and UI action names are code identifiers. Anything else from the
 // renderer is dropped rather than scrubbed, so free text cannot slip in.
 const IDENTIFIER = /^[A-Za-z0-9_.:/-]{1,100}$/;
+// Where the user saw a failure (kebab-case), its error code, and the Ref the
+// user read: the whole vocabulary of a user-facing failure report.
+const SURFACE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
+const ERROR_REF = /^NB-[0-9A-F]{8}(?:-[0-9A-F]{4})?$/;
 
 const LIMITS = Object.freeze({
   name: 200,
@@ -94,6 +102,25 @@ function cleanContext(raw, scrub) {
     if (key && value) context[key] = value;
   }
   return context;
+}
+
+/**
+ * The context of a user-facing failure the renderer reports, or null when the
+ * payload holds anything but the three identifiers. Such a report never
+ * carries text: the message the user read may quote an agent's reply or a
+ * page, so a payload that does not match is refused rather than scrubbed.
+ */
+function userFacingFailure(payload) {
+  const context = payload.context;
+  if (!context || typeof context !== "object" || Array.isArray(context)) return null;
+  const { surface, code, ref, ...rest } = context;
+  if (Object.keys(rest).length) return null;
+  if (typeof surface !== "string" || surface.length > 64 || !SURFACE.test(surface)) return null;
+  if (typeof code !== "string" || !ERROR_CODE.test(code)) return null;
+  if (ref !== undefined && (typeof ref !== "string" || !ERROR_REF.test(ref))) return null;
+  if (payload.name !== code || payload.message !== `${surface}: ${code}`) return null;
+  if (payload.stack !== undefined && payload.stack !== "") return null;
+  return { surface, code, ...(ref ? { ref } : {}) };
 }
 
 function cleanTraceId(value) {
@@ -366,6 +393,13 @@ function createClientErrorReporter({
       context.last_occurred_at = event.occurred_at;
       existing.event.context = context;
     }
+    // Every Ref names one incident. The folded report keeps the first one and
+    // the latest one, which is the one a user most likely sends to support.
+    const ref = event.context?.ref;
+    if (ref && ref !== context.ref && (context.last_ref || Object.keys(context).length < LIMITS.contextKeys)) {
+      context.last_ref = ref;
+      existing.event.context = context;
+    }
     return true;
   }
 
@@ -562,6 +596,21 @@ function createClientErrorReporter({
   /** Accepts an error event sent by the renderer over IPC. */
   function captureFromRenderer(payload) {
     if (!payload || typeof payload !== "object" || !RENDERER_KINDS.has(payload.kind)) return false;
+    const eventView = IDENTIFIER.test(String(payload.view || "")) ? payload.view : undefined;
+    const action = IDENTIFIER.test(String(payload.action || "")) ? payload.action : undefined;
+    if (payload.kind === "command_failed") {
+      const failure = userFacingFailure(payload);
+      if (!failure) return false;
+      return capture({
+        source: "renderer",
+        kind: "command_failed",
+        name: failure.code,
+        message: `${failure.surface}: ${failure.code}`,
+        view: eventView,
+        action,
+        context: failure,
+      });
+    }
     const context = payload.context && typeof payload.context === "object" ? payload.context : undefined;
     return capture({
       source: "renderer",
@@ -569,8 +618,8 @@ function createClientErrorReporter({
       name: payload.name,
       message: payload.message,
       stack: payload.stack,
-      view: IDENTIFIER.test(String(payload.view || "")) ? payload.view : undefined,
-      action: IDENTIFIER.test(String(payload.action || "")) ? payload.action : undefined,
+      view: eventView,
+      action,
       context,
     });
   }

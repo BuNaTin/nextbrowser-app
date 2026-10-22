@@ -5,7 +5,7 @@ import { errorReference, isBackgroundSyncFailure } from "./userFacingError";
 // queues and sends them (electron/client-error-reporter.cjs). Nothing here
 // may throw: a broken reporter must not become another app error.
 
-export type RendererErrorKind = "exception" | "unhandled_rejection" | "react_render";
+export type RendererErrorKind = "exception" | "unhandled_rejection" | "react_render" | "command_failed";
 
 export interface RendererErrorReport {
   kind: RendererErrorKind;
@@ -17,8 +17,23 @@ export interface RendererErrorReport {
   context?: Record<string, string>;
 }
 
+/** An error the app showed the user, named by identifiers only. */
+export interface UserFacingErrorReport {
+  /** Where the user saw it, in kebab-case, e.g. "scheduled-run-start". */
+  surface: string;
+  /** The error code, e.g. "AGENT_START_FAILED". */
+  code: string;
+  /** The Ref the user read, when the message carried one. */
+  ref?: string;
+}
+
 // Views and UI actions are code identifiers, never user text.
 const IDENTIFIER = /^[A-Za-z0-9_.:/-]{1,100}$/;
+// The main process accepts exactly these shapes for a user-facing failure
+// (electron/client-error-reporter.cjs) and refuses anything else.
+const SURFACE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
+const ERROR_REF = /^NB-[0-9A-F]{8}(?:-[0-9A-F]{4})?$/;
 const RATE_WINDOW_MS = 60_000;
 const MAX_REPORTS_PER_WINDOW = 30;
 // Chromium raises this for a layout that settles over two frames; it is not a
@@ -29,6 +44,8 @@ let currentView = "";
 let lastAction = "";
 let windowStartedAt = 0;
 let reportsInWindow = 0;
+// A Ref names one incident, however many places show it.
+const reportedRefs = new Set<string>();
 
 function bridge() {
   return typeof window === "undefined" ? undefined : window.nextbrowser;
@@ -81,12 +98,8 @@ export function unexpectedErrorReference(detail: string): string {
   return errorReference(detail.trim() || "Unknown renderer error");
 }
 
-export function reportRendererError(
-  kind: RendererErrorKind,
-  error: unknown,
-  context: Record<string, string> = {},
-  componentStack?: string | null,
-): boolean {
+/** Hands one report to the main process, within the renderer's rate limit. */
+function send(build: () => RendererErrorReport): boolean {
   try {
     const target = bridge();
     if (!target?.reportError) return false;
@@ -97,9 +110,23 @@ export function reportRendererError(
     }
     if (reportsInWindow >= MAX_REPORTS_PER_WINDOW) return false;
     reportsInWindow += 1;
+    target.reportError(build());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function reportRendererError(
+  kind: RendererErrorKind,
+  error: unknown,
+  context: Record<string, string> = {},
+  componentStack?: string | null,
+): boolean {
+  return send(() => {
     const described = describeError(error);
     const stack = [described.stack, componentStack ? `Component stack:${componentStack}` : ""].filter(Boolean).join("\n\n");
-    const report: RendererErrorReport = {
+    return {
       kind,
       name: described.name,
       message: described.message,
@@ -108,11 +135,29 @@ export function reportRendererError(
       ...(lastAction ? { action: lastAction } : {}),
       context,
     };
-    target.reportError(report);
-    return true;
-  } catch {
-    return false;
-  }
+  });
+}
+
+/**
+ * Reports a failure the app caught and showed the user, which therefore never
+ * reached the global error handlers. The report names the failure by
+ * identifiers only: the message the user read can quote an agent's reply, a
+ * page or a file name, so its text is never sent. Each Ref is reported once.
+ */
+export function reportUserFacingError({ surface, code, ref }: UserFacingErrorReport): boolean {
+  if (surface.length > 64 || !SURFACE.test(surface) || !ERROR_CODE.test(code)) return false;
+  const safeRef = ref && ERROR_REF.test(ref) ? ref : undefined;
+  if (safeRef && reportedRefs.has(safeRef)) return false;
+  const sent = send(() => ({
+    kind: "command_failed",
+    name: code,
+    message: `${surface}: ${code}`,
+    ...(currentView ? { view: currentView } : {}),
+    ...(lastAction ? { action: lastAction } : {}),
+    context: { surface, code, ...(safeRef ? { ref: safeRef } : {}) },
+  }));
+  if (sent && safeRef) reportedRefs.add(safeRef);
+  return sent;
 }
 
 /** Reports uncaught renderer errors and unhandled promise rejections. */
@@ -146,4 +191,5 @@ export function resetErrorReportingForTests(): void {
   lastAction = "";
   windowStartedAt = 0;
   reportsInWindow = 0;
+  reportedRefs.clear();
 }

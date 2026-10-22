@@ -4,6 +4,7 @@ import {
   installErrorReporting,
   recordUiAction,
   reportRendererError,
+  reportUserFacingError,
   resetErrorReportingForTests,
   setErrorReportingView,
   unexpectedErrorReference,
@@ -107,6 +108,44 @@ describe("renderer error reporting", () => {
   it("rate-limits a renderer error loop", () => {
     for (let index = 0; index < 100; index += 1) reportRendererError("exception", new Error(`loop ${index}`));
     expect(env.reports).toHaveLength(30);
+  });
+
+  it("reports an error the user saw by surface, code and Ref only", () => {
+    setErrorReportingView("chat");
+    recordUiAction("chat_request_submitted");
+    expect(reportUserFacingError({ surface: "agent-turn", code: "AGENT_START_FAILED", ref: "NB-6F2C1A9B-04D2" })).toBe(true);
+    expect(env.reports).toEqual([{
+      kind: "command_failed",
+      name: "AGENT_START_FAILED",
+      message: "agent-turn: AGENT_START_FAILED",
+      view: "chat",
+      action: "chat_request_submitted",
+      context: { surface: "agent-turn", code: "AGENT_START_FAILED", ref: "NB-6F2C1A9B-04D2" },
+    }]);
+  });
+
+  it("reports each Ref once and needs no Ref", () => {
+    const shown = { surface: "live-view", code: "LIVE_VIEW_CONNECT_FAILED", ref: "NB-1234ABCD-00FF" };
+    expect(reportUserFacingError(shown)).toBe(true);
+    expect(reportUserFacingError(shown)).toBe(false);
+    expect(reportUserFacingError({ ...shown, surface: "chat-system" })).toBe(false);
+    expect(reportUserFacingError({ surface: "startup", code: "STARTUP_LOCAL_TIMED_OUT" })).toBe(true);
+    expect(reportUserFacingError({ surface: "startup", code: "STARTUP_LOCAL_TIMED_OUT" })).toBe(true);
+    expect(env.reports.map((report) => report.context)).toEqual([
+      shown,
+      { surface: "startup", code: "STARTUP_LOCAL_TIMED_OUT" },
+      { surface: "startup", code: "STARTUP_LOCAL_TIMED_OUT" },
+    ]);
+  });
+
+  it("sends no free text as a surface, code or Ref", () => {
+    expect(reportUserFacingError({ surface: "We couldn't start the agent.", code: "AGENT_START_FAILED" })).toBe(false);
+    expect(reportUserFacingError({ surface: "agent_turn", code: "AGENT_START_FAILED" })).toBe(false);
+    expect(reportUserFacingError({ surface: "agent-turn", code: "start failed: ENOENT /Users/alice" })).toBe(false);
+    expect(reportUserFacingError({ surface: "agent-turn", code: "AGENT_START_FAILED", ref: "NB-1234ABCD and the reply" })).toBe(true);
+    expect(env.reports).toHaveLength(1);
+    expect(env.reports[0].context).toEqual({ surface: "agent-turn", code: "AGENT_START_FAILED" });
+    expect(JSON.stringify(env.reports)).not.toContain("reply");
   });
 
   it("is a no-op without the bridge and never throws", () => {

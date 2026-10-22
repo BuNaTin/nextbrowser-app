@@ -1,3 +1,4 @@
+import { isMissingAgentInstallError } from "../agents";
 import type { ExecutionTarget } from "./executionTarget";
 
 /** How long a due run that could not start waits before it tries again. The
@@ -50,13 +51,10 @@ export interface ScheduledAgentRuntime {
 export function scheduledAgentCheck(runtime: ScheduledAgentRuntime | undefined, agentName: string): ScheduledStartCheck {
   if (runtime?.authorizing) return { status: "wait", reason: `${agentName} is still connecting.`, code: "SCHEDULED_AGENT_CONNECT_TIMEOUT" };
   // The run already tried to connect the agent, so "not connected" is a
-  // failed connection, not a choice.
+  // failed connection, not a choice, unless the agent is not installed.
   if (!runtime?.ready) {
-    return {
-      status: "failed",
-      error: runtime?.error || `${agentName} is not connected. Connect ${agentName} in Nextbrowser.`,
-      code: "SCHEDULED_AGENT_NOT_CONNECTED",
-    };
+    const error = runtime?.error || `${agentName} is not connected. Connect ${agentName} in Nextbrowser.`;
+    return isMissingAgentInstallError(error) ? { status: "failed", error } : { status: "failed", error, code: "SCHEDULED_AGENT_NOT_CONNECTED" };
   }
   if (runtime.loggedIn === false) {
     return { status: "failed", error: `${agentName} is signed out. Use “Log in” for ${agentName}.` };

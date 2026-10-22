@@ -20,8 +20,10 @@ describe("scheduled agent check", () => {
       error: "Codex is not connected. Connect Codex in Nextbrowser.",
       code: "SCHEDULED_AGENT_NOT_CONNECTED",
     });
-    expect(scheduledAgentCheck({ ready: false, error: "Codex app not found." }, "Codex"))
-      .toEqual({ status: "failed", error: "Codex app not found.", code: "SCHEDULED_AGENT_NOT_CONNECTED" });
+    expect(scheduledAgentCheck({ ready: false, error: "We couldn't connect Codex. Ref: NB-0A1B2C3D-0001" }, "Codex"))
+      .toEqual({ status: "failed", error: "We couldn't connect Codex. Ref: NB-0A1B2C3D-0001", code: "SCHEDULED_AGENT_NOT_CONNECTED" });
+    // An agent that is not installed is the user's to install, so it carries no code to report.
+    expect(scheduledAgentCheck({ ready: false, error: "Codex app not found." }, "Codex")).toEqual({ status: "failed", error: "Codex app not found." });
     // A sign-out is the user's to fix, so it carries no code to report.
     expect(scheduledAgentCheck({ ready: true, loggedIn: false }, "Codex")).toEqual({ status: "failed", error: expect.stringMatching(/signed out/) });
   });

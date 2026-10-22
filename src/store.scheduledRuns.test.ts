@@ -131,9 +131,8 @@ describe("a scheduled run that cannot start", () => {
 
     expect(runState(useStore).lastFiredAt).toBeUndefined();
     expect(runState(useStore).lastError).toMatch(/Codex not found/);
-    // Nobody may open the schedule for days, so the failure is reported.
-    expect(reporting.reportUserFacingMessage).toHaveBeenCalledOnce();
-    expect(reporting.reportUserFacingMessage).toHaveBeenCalledWith("scheduled-run-start", runState(useStore).lastError, "SCHEDULED_AGENT_NOT_CONNECTED");
+    // An agent that is not installed is the user's to install.
+    expect(reporting.reportUserFacingMessage).not.toHaveBeenCalled();
     // No empty chat and no dropped prompt.
     expect(scheduledChats(useStore)).toEqual([]);
     expect(useStore.getState().runtime.codex.queue).toEqual([]);
@@ -151,6 +150,18 @@ describe("a scheduled run that cannot start", () => {
     await useStore.getState().tickScheduledRuns();
     expect(runState(useStore)).toMatchObject({ lastFiredAt: Date.now(), lastError: undefined });
     expect(scheduledChats(useStore)).toHaveLength(1);
+  });
+
+  it("reports an agent that failed to connect, since nobody may open the schedule for days", async () => {
+    bridge.invoke.mockImplementation(invokeWith({ agent_authorize: () => Promise.reject(new Error("codex exited with code 2")) }));
+    const useStore = await loadStore({ codex: { ready: false } });
+    await useStore.getState().loadProfiles();
+    await useStore.getState().tickScheduledRuns();
+
+    expect(runState(useStore).lastFiredAt).toBeUndefined();
+    expect(runState(useStore).lastError).toMatch(/^We couldn't connect Codex\. Ref: NB-/);
+    expect(reporting.reportUserFacingMessage).toHaveBeenCalledOnce();
+    expect(reporting.reportUserFacingMessage).toHaveBeenCalledWith("scheduled-run-start", runState(useStore).lastError, "SCHEDULED_AGENT_NOT_CONNECTED");
   });
 
   it("reports a signed-out agent instead of silently dropping the prompt", async () => {

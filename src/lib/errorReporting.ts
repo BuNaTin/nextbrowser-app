@@ -152,7 +152,7 @@ export function reportRendererError(
  * page or a file name, so its text is never sent. Each Ref is reported once.
  */
 export function reportUserFacingError({ surface, code, ref }: UserFacingErrorReport): boolean {
-  if (surface.length > 64 || !SURFACE.test(surface) || !ERROR_CODE.test(code)) return false;
+  if (typeof surface !== "string" || surface.length > 64 || !SURFACE.test(surface) || !ERROR_CODE.test(code)) return false;
   const safeRef = ref && ERROR_REF.test(ref) ? ref : undefined;
   if (safeRef && reportedRefs.has(safeRef)) return false;
   const sent = send(() => ({
@@ -176,15 +176,19 @@ export function reportUserFacingError({ surface, code, ref }: UserFacingErrorRep
  * reported here. The message text is never sent.
  */
 export function reportUserFacingMessage(surface: string, message: string, fallbackCode?: string): boolean {
-  const refs = errorRefsIn(message);
-  for (let index = refs.length - 1; index >= 0; index -= 1) {
-    const ref = refs[index];
-    const code = errorCodeForRef(ref);
-    if (!code) continue;
-    if (!reportedRefs.has(ref)) return reportUserFacingError({ surface, code, ref });
-    break;
+  try {
+    const refs = errorRefsIn(message);
+    for (let index = refs.length - 1; index >= 0; index -= 1) {
+      const ref = refs[index];
+      const code = errorCodeForRef(ref);
+      if (!code) continue;
+      if (!reportedRefs.has(ref)) return reportUserFacingError({ surface, code, ref });
+      break;
+    }
+    return fallbackCode ? reportUserFacingError({ surface, code: fallbackCode }) : false;
+  } catch {
+    return false;
   }
-  return fallbackCode ? reportUserFacingError({ surface, code: fallbackCode }) : false;
 }
 
 /** Reports uncaught renderer errors and unhandled promise rejections. */

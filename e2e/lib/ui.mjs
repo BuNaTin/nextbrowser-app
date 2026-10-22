@@ -162,7 +162,7 @@ export async function setChatMode(page, mode) {
 export async function askAgent(page, text, { timeoutMs = 600_000 } = {}) {
   const replies = page.locator(".assistant-bubble");
   const before = await replies.count();
-  const composer = page.locator("textarea").last();
+  const composer = page.getByRole("textbox", { name: /^Message / }).last();
   await composer.fill(text);
   await page.getByRole("button", { name: "Send message to the selected agent" }).click();
   await waitFor(async () => (await replies.count()) > before, "the agent's reply to appear", 60_000);

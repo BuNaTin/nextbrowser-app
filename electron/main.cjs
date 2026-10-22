@@ -135,8 +135,11 @@ const { clientEnvironmentAllowed, createClientEnvironment } = require("./client-
 const { createEnvironmentCollector } = require("./client-environment-collect.cjs");
 const { describeBackendRequest, setBackendClientInfo, setBackendRequestObserver, tracedBackendFetch } = require("./backend-fetch.cjs");
 const { describeNbcResult, isNextctlBinary } = require("./nbc-failure-report.cjs");
+const { describeAgentResult } = require("./agent-failure-report.cjs");
 
 const children = new Map();
+// Agent runs the user stopped: their non-zero exit is not a failure.
+const stoppedAgentRuns = new Set();
 const terminals = new Map();
 
 function killTerminalsForWebContents(webContentsId) {
@@ -268,6 +271,17 @@ function reportNbcResult(args, result, outcome, durationMs) {
     if (event) errorReporter.capture(event);
   } catch {
     // Reporting never changes a command's result.
+  }
+}
+/** Reports a failed agent run and returns the reason to show in the chat. */
+function reportAgentResult(details) {
+  try {
+    const { reason, event } = describeAgentResult(details);
+    if (event) errorReporter.capture(event);
+    return reason;
+  } catch {
+    // Reporting never changes a run's result.
+    return "";
   }
 }
 const AGENT_CONTROL_ROUTES = new Set(["/profile/start", "/profile/stop", "/artifact/save", "/project/create", "/project/list", "/project/delete", "/personal-proxies/list"]);
@@ -2619,6 +2633,7 @@ async function invokeCommand(command, args = {}, sender) {
         ? createClaudeStreamDecoder({ onText: emitText, onStep: emitStep })
         : null;
       const codexSteps = args.stepFormat === "codex-stderr" ? createCodexStepDecoder({ onStep: emitStep }) : null;
+      const startedAt = Date.now();
       try {
         return await runAgentProcess({
           spawnProcess: spawn,
@@ -2649,7 +2664,14 @@ async function invokeCommand(command, args = {}, sender) {
             // The raw stdout is the event stream; the rest of the app reads it
             // as the reply (empty-reply and sign-in checks included).
             if (claudeStream) result.stdout = claudeStream.end();
-            emit("agent:done", [args.replyId, result.code, result.stderr, result.stdout]);
+            const reason = reportAgentResult({
+              agentId: String(args.agentId || ""),
+              result,
+              durationMs: Date.now() - startedAt,
+              plain,
+              outcome: { stopped: stoppedAgentRuns.delete(args.replyId), quitting: appQuitting },
+            });
+            emit("agent:done", [args.replyId, result.code, result.stderr, result.stdout, reason]);
           },
         });
       } finally {
@@ -2684,6 +2706,7 @@ async function invokeCommand(command, args = {}, sender) {
     case "agent_terminate": {
       const child = children.get(args.replyId);
       if (child) {
+        stoppedAgentRuns.add(args.replyId);
         await terminateProcessTree(child.pid, { includeRoot: true });
         children.delete(args.replyId);
       }

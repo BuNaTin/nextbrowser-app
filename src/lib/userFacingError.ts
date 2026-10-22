@@ -30,6 +30,22 @@ export function needsSupportLink(message: string): boolean {
 }
 
 /**
+ * The line an agent CLI printed when it gave up (picked out of its error
+ * output by electron/agent-failure-report.cjs), as a sentence for the chat:
+ * without the "ERROR:" label or a log line's timestamp and level.
+ */
+export function agentFailureDetail(reason?: string): string {
+  const text = String(reason || "")
+    .replace(/^\S*\d{2}:\d{2}:\d{2}\S*\s+(?:ERROR|FATAL)\s+/, "")
+    .replace(/^(?:\[[^\]]*\]\s*)?(?:error|fatal)\s*:\s*/i, "")
+    .trim();
+  if (!text) return "";
+  // A plain word starts the sentence; a module path such as codex_core::x keeps its case.
+  const sentence = /^[a-z]+(?:\s|$)/.test(text) ? text[0].toUpperCase() + text.slice(1) : text;
+  return /[.!?…:]$/.test(sentence) ? sentence : `${sentence}.`;
+}
+
+/**
  * A failed action must stay diagnosable: the reference maps back to the error
  * code, and the sanitized reason tells the user what actually failed instead of
  * leaving them with a hash alone.

@@ -95,7 +95,7 @@ import { trafficGateState } from "./lib/trafficGate";
 import { activeAutomationRecording, clearActiveAutomationRecording } from "./lib/automationRecording";
 import { clearActiveAutomationExecution } from "./lib/automationExecution";
 import { setAnalyticsUserId, trackEvent, trackScreenView, trackTiming } from "./lib/analytics";
-import { actionFailureMessage, errorReference, internalError } from "./lib/userFacingError";
+import { actionFailureMessage, agentFailureDetail, errorReference, internalError } from "./lib/userFacingError";
 import { agentEmptyReplyMessage } from "./lib/agentRunResult";
 import { isBrowserVerificationFailure, userFacingBrowserError } from "./lib/userFacingBrowserError";
 import {
@@ -1016,7 +1016,8 @@ async function createDefaultWorkspaceProfiles(workspaceId: string): Promise<{ cr
 // single agent reply would be appended once per registration (duplicate output).
 // Mirrors AppState.didBootstrap in the Swift app.
 let didBootstrap = false;
-type AgentDone = { code: number; stderr: string; stdout: string };
+// reason: the line the CLI printed when it gave up, found by the main process.
+type AgentDone = { code: number; stderr: string; stdout: string; reason?: string };
 interface NextctlUpdateState { lastAutoCheckAt?: number; rateLimitedUntil?: number }
 interface APIKeyIdentity {
   valid: boolean;
@@ -2241,7 +2242,8 @@ export const useStore = create<State>((set, get) => {
             text = text ? `${text}\n[stopped]` : "[stopped]";
           } else if (result.code !== 0) {
             status = "failed";
-            const error = internalError(`${agentById(agentId).name} stopped unexpectedly.`, "AGENT_STOPPED_UNEXPECTEDLY");
+            const detail = agentFailureDetail(result.reason);
+            const error = internalError(`${agentById(agentId).name} stopped unexpectedly.${detail ? ` ${detail}` : ""}`, "AGENT_STOPPED_UNEXPECTEDLY");
             text = text ? `${text}\n${error}` : error;
           } else if (!text) {
             status = "failed";
@@ -2630,9 +2632,9 @@ export const useStore = create<State>((set, get) => {
         });
       });
 
-      await listen<[string, number, string, string]>("agent:done", (e) => {
-        const [replyId, code, stderr, stdout] = e.payload;
-        void finishAgentRun(replyId, { code, stderr, stdout });
+      await listen<[string, number, string, string, string?]>("agent:done", (e) => {
+        const [replyId, code, stderr, stdout, reason] = e.payload;
+        void finishAgentRun(replyId, { code, stderr, stdout, reason });
       });
       await listen<AuthDeepLinkPayload>("auth:deeplink", (event) => {
         const pairing = get().accountPairing;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   actionFailureMessage,
+  agentFailureDetail,
   errorReference,
   internalError,
   needsSupportLink,
@@ -55,5 +56,26 @@ describe("user-facing internal errors", () => {
   it("falls back to the bare reference when no reason is available", () => {
     expect(actionFailureMessage("Failed.", "ACTION_FAILED")).toBe(`Failed. Ref: ${errorReference("ACTION_FAILED")}`);
     expect(actionFailureMessage("Failed.", "ACTION_FAILED", "   ")).toBe(`Failed. Ref: ${errorReference("ACTION_FAILED")}`);
+  });
+});
+
+describe("agent failure detail", () => {
+  it("turns the CLI's error line into a sentence", () => {
+    expect(agentFailureDetail("ERROR: You've hit your usage limit. Try again later.")).toBe("You've hit your usage limit. Try again later.");
+    expect(agentFailureDetail("ERROR: stream disconnected before completion")).toBe("Stream disconnected before completion.");
+    expect(agentFailureDetail("API Error: 529 Overloaded")).toBe("API Error: 529 Overloaded.");
+    expect(agentFailureDetail("2026-10-23T07:02:11.831641Z ERROR codex_core::client: unexpected status 400 Bad Request"))
+      .toBe("codex_core::client: unexpected status 400 Bad Request.");
+  });
+
+  it("is empty without a reason", () => {
+    expect(agentFailureDetail(undefined)).toBe("");
+    expect(agentFailureDetail("ERROR:  ")).toBe("");
+  });
+
+  it("keeps the reference after the reason", () => {
+    const message = internalError(`Codex stopped unexpectedly. ${agentFailureDetail("ERROR: stream disconnected")}`, "AGENT_STOPPED_UNEXPECTEDLY");
+    expect(message).toBe(`Codex stopped unexpectedly. Stream disconnected. Ref: ${errorReference("AGENT_STOPPED_UNEXPECTEDLY")}`);
+    expect(needsSupportLink(message)).toBe(true);
   });
 });

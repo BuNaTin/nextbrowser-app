@@ -1,4 +1,4 @@
-import { incidentReference, isBackgroundSyncFailure } from "./userFacingError";
+import { errorCodeForRef, errorRefsIn, incidentReference, isBackgroundSyncFailure } from "./userFacingError";
 
 // Renderer half of client error reporting. Errors and breadcrumbs go to the
 // main process over the preload bridge; the main process scrubs, folds,
@@ -165,6 +165,22 @@ export function reportUserFacingError({ surface, code, ref }: UserFacingErrorRep
   }));
   if (sent && safeRef) reportedRefs.add(safeRef);
   return sent;
+}
+
+/**
+ * Reports a message the app showed, by the last Ref in it that this window
+ * made (the Ref says which error code it stands for), or else by
+ * `fallbackCode`. A Ref from elsewhere, such as a message saved before a
+ * restart or a profile start failure the main process worded, is not
+ * reported here. The message text is never sent.
+ */
+export function reportUserFacingMessage(surface: string, message: string, fallbackCode?: string): boolean {
+  const refs = errorRefsIn(message);
+  for (let index = refs.length - 1; index >= 0; index -= 1) {
+    const code = errorCodeForRef(refs[index]);
+    if (code) return reportUserFacingError({ surface, code, ref: refs[index] });
+  }
+  return fallbackCode ? reportUserFacingError({ surface, code: fallbackCode }) : false;
 }
 
 /** Reports uncaught renderer errors and unhandled promise rejections. */

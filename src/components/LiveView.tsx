@@ -183,9 +183,11 @@ export function LiveView({ active }: { active: boolean }) {
           setState("error");
         }
       },
-      onError: () => {
+      // The client words its own failures (connect, session closed, tab
+      // switch), so the screen and the report name the one that happened.
+      onError: (message) => {
         if (!current()) return;
-        setError(internalError("We couldn't connect Live View.", "LIVE_VIEW_CONNECT_FAILED"));
+        setError(message);
         setState("error");
       },
       onStream: (stream) => {

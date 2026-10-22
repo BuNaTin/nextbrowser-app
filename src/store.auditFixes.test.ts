@@ -259,6 +259,26 @@ it("terminates an in-flight reply and clears its marker when its chat is deleted
   expect(bridge.invoke.mock.calls.some(([command, args]) => command === "agent_terminate" && (args as { replyId?: string })?.replyId === "r1")).toBe(true);
 });
 
+it("tells the main process when the app, not the user, stops a reply for taking too long", async () => {
+  const { useStore } = await import("./store");
+  const project = {
+    id: "c1", title: "C", agent: "claude",
+    messages: [
+      { id: "r1", role: "assistant" as const, text: "…", status: "streaming" as const, createdAt: 1 },
+      { id: "r2", role: "assistant" as const, text: "…", status: "streaming" as const, createdAt: 2 },
+    ],
+    createdAt: 1, updatedAt: 1, executionTarget: "local" as const,
+  };
+  const runtime = useStore.getState().runtime;
+  bridge.invoke.mockResolvedValue(null);
+  useStore.setState({ conversations: [project], runtime: { ...runtime, claude: { ...runtime.claude, runningReplyId: "r1" } } });
+  useStore.getState().stopReply("r1");
+  useStore.setState({ runtime: { ...runtime, claude: { ...runtime.claude, runningReplyId: "r2" } } });
+  useStore.getState().stopReply("r2", { reason: "timeout" });
+  const terminations = bridge.invoke.mock.calls.filter(([command]) => command === "agent_terminate").map(([, args]) => args);
+  expect(terminations).toEqual([{ replyId: "r1" }, { replyId: "r2", reason: "timeout" }]);
+});
+
 it("drops queued replies when their chat is deleted", async () => {
   const { useStore } = await import("./store");
   const project = { id: "c1", title: "C", agent: "claude", messages: [], createdAt: 1, updatedAt: 1, executionTarget: "local" as const };

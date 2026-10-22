@@ -505,7 +505,8 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
     if (!answer || !["queued", "streaming"].includes(answer.status) || automationAgentBrowserActionCount(automationExecution, store.conversations) > 0) return;
     stallHandledFor.current = automationExecution.executionId;
     const attempt = automationExecution.repairAttempt || 0;
-    if (store.cancelQueuedReply(automationExecution.replyId) === false) store.stopReply(automationExecution.replyId);
+    // The app stops the reply, not the user, so it is reported as a timeout.
+    if (store.cancelQueuedReply(automationExecution.replyId) === false) store.stopReply(automationExecution.replyId, { reason: "timeout" });
     if (attempt >= 1 || !automationExecution.workflowSnapshot) {
       setActiveAutomationExecution({ ...automationExecution, phase: "failed", progress: 100, detail: "AI repair made no browser progress after two attempts. Retry when the agent is available.", error: "AI repair stalled before its first browser action." });
       reportUserFacingError({ surface: "automation-repair", code: "AUTOMATION_REPAIR_STALLED" });

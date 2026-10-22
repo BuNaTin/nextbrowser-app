@@ -836,7 +836,9 @@ interface State {
   clearChat: () => void;
   enqueue: (text: string, chip?: UserCommandChip, into?: string, attachments?: ChatAttachment[], agentPrompt?: string) => string | undefined;
   stopRunning: () => void;
-  stopReply: (replyId: string) => void;
+  /** `reason: "timeout"` marks a stop the app made because the reply ran too
+   *  long, which the main process reports; a user's Stop is not reported. */
+  stopReply: (replyId: string, options?: { reason?: "timeout" }) => void;
   cancelQueuedReply: (replyId: string) => boolean;
   editQueuedReply: (replyId: string, newText: string) => boolean;
   canManageQueuedReply: (replyId: string) => boolean;
@@ -1871,7 +1873,8 @@ async function runDraftAgent(options: {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    void invoke("agent_terminate", { replyId }).catch(() => undefined);
+    // Not the user's Stop: the main process reports it as a timeout.
+    void invoke("agent_terminate", { replyId, reason: "timeout" }).catch(() => undefined);
   }, X_REPLY_DRAFT_TIMEOUT_MS);
   try {
     const result = await invoke<AgentDone>("agent_run", {
@@ -6140,7 +6143,7 @@ export const useStore = create<State>((set, get) => {
     get().stopReply(replyId);
   },
 
-  stopReply: (replyId) => {
+  stopReply: (replyId, options) => {
     const agentId = Object.entries(get().runtime).find(([, runtime]) => runtime.runningReplyId === replyId)?.[0];
     if (!agentId) return;
     trackEvent("agent_turn_stop_requested", { agent: agentId });
@@ -6161,7 +6164,7 @@ export const useStore = create<State>((set, get) => {
       : [];
     const baseline = replyProfileBaselines.get(replyId) ?? new Set<string>();
     const workspaceProfiles = get().workspaces.find((workspace) => workspace.id === conversation?.workspaceId)?.profileNames ?? [];
-    void invoke("agent_terminate", { replyId }).finally(() => {
+    void invoke("agent_terminate", { replyId, ...(options?.reason ? { reason: options.reason } : {}) }).finally(() => {
       void get().loadProfiles().catch(() => undefined).finally(() => {
         const newlyStarted = workspaceProfiles.filter((profile) => get().statuses[profile] === "running" && !baseline.has(profile));
         const targets = [...new Set([...ownedProfiles, ...newlyStarted])];

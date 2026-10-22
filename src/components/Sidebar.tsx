@@ -4,6 +4,7 @@ import { personalProxyUsers, useStore, type ManualProxyProfileInput } from "../s
 import { agentById } from "../agents";
 import { shouldDismissModalWithEscape } from "../lib/modalKeyboard";
 import { trackEvent } from "../lib/analytics";
+import { reportUserFacingError } from "../lib/errorReporting";
 import { BrandHeader, BrandLogo } from "./BrandLogo";
 import { Icon, Spinner } from "./Icon";
 import { withLocalScripts } from "../skillsCatalog";
@@ -507,6 +508,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
     if (store.cancelQueuedReply(automationExecution.replyId) === false) store.stopReply(automationExecution.replyId);
     if (attempt >= 1 || !automationExecution.workflowSnapshot) {
       setActiveAutomationExecution({ ...automationExecution, phase: "failed", progress: 100, detail: "AI repair made no browser progress after two attempts. Retry when the agent is available.", error: "AI repair stalled before its first browser action." });
+      reportUserFacingError({ surface: "automation-repair", code: "AUTOMATION_REPAIR_STALLED" });
       return;
     }
     const retrying: AutomationExecution = { ...automationExecution, executionId: uid(), replyId: undefined, startedAt: Date.now(), phase: "preparing", progress: 8, detail: "The first AI repair stalled. Restarting it once automatically…", repairAttempt: 1 };
@@ -519,9 +521,15 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
     )).then((replyId) => {
       const current = activeAutomationExecution();
       if (!current || current.executionId !== retrying.executionId) return;
-      if (!replyId) return setActiveAutomationExecution({ ...retrying, phase: "failed", progress: 100, detail: "The automatic AI retry could not be started." });
+      if (!replyId) {
+        reportUserFacingError({ surface: "automation-repair", code: "AUTOMATION_REPAIR_RETRY_FAILED" });
+        return setActiveAutomationExecution({ ...retrying, phase: "failed", progress: 100, detail: "The automatic AI retry could not be started." });
+      }
       setActiveAutomationExecution({ ...retrying, replyId, phase: "running", detail: "AI repair restarted automatically…" });
-    }).catch((error) => setActiveAutomationExecution({ ...retrying, phase: "failed", progress: 100, detail: error instanceof Error ? error.message : String(error) }));
+    }).catch((error) => {
+      reportUserFacingError({ surface: "automation-repair", code: "AUTOMATION_REPAIR_RETRY_FAILED" });
+      setActiveAutomationExecution({ ...retrying, phase: "failed", progress: 100, detail: error instanceof Error ? error.message : String(error) });
+    });
   }, [automationExecution?.executionId, automationExecution?.phase, automationExecution?.replyId, automationExecution?.startedAt, automationExecutionClock, s.conversations]);
 
   useEffect(() => {
@@ -600,6 +608,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
       }
       if (cancelled) return;
       if (persisted) window.dispatchEvent(new CustomEvent("nextbrowser:automation-library-change", { detail: { sourceKind: automationExecution.sourceKind } }));
+      else reportUserFacingError({ surface: "automation-repair", code: "AUTOMATION_REPAIR_NOT_SAVED" });
       const detail = persisted
         ? `${automationExecution.sourceKind === "workflow" ? "Workflow" : "Recording"} completed. AI repaired the fast path and saved it for future runs.`
         : `The original task completed, but the repaired fast path was not saved: ${persistenceError}`;
@@ -615,6 +624,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
     })().catch((error) => {
       if (cancelled) return;
       const detail = error instanceof Error ? error.message : String(error);
+      reportUserFacingError({ surface: "automation-repair", code: "AUTOMATION_REPAIR_VALIDATION_FAILED" });
       if (automationExecution.backendRunId) void invoke("automation_run_update", { id: automationExecution.backendRunId, update: { status: "failed", output: { engine: "hybrid", repaired: false, detail } } }).catch(() => undefined);
       setActiveAutomationExecution(withAutomationExecutionEvent({ ...automationExecution, phase: "failed", progress: 100, outputValidationError: detail, detail }, {
         kind: "validation", title: "Repair result did not pass validation", detail, state: "failed",

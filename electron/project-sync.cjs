@@ -62,6 +62,8 @@ async function projectRequest(route, options = {}, deps = {}) {
     const error = new Error("Nextbrowser could not connect to the service. Check your internet connection and try again.");
     error.code = "NEXTBROWSER_BACKEND_UNAVAILABLE";
     error.cause = lastCause;
+    // The request observer reports network failures and 5xx responses.
+    error.reported = true;
     throw error;
   }
   if (response.ok && responseType === "stream") return response.body;
@@ -77,6 +79,7 @@ async function projectRequest(route, options = {}, deps = {}) {
       : body?.error || `Project sync failed (${response.status}).`;
     const error = new Error(reason);
     error.status = response.status;
+    error.reported = response.status >= 500;
     throw error;
   }
   return body;

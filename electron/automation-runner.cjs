@@ -1,6 +1,7 @@
 const { spawn } = require("node:child_process");
 const { assertArtifactDataContract } = require("./automation-artifact.cjs");
 const { sharedCopyMarker, sharedScriptBlock } = require("./automation-shared-copies.cjs");
+const { userError } = require("./user-error.cjs");
 
 const MAX_ACTIONS = 100;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -387,7 +388,11 @@ function boundedOutput(value, maxBytes = 1_500_000) {
   }
 }
 
-function createMCPClient({ binary, args, env, spawnImpl = spawn }) {
+// `onExit` hears about a runner that could not start or ended on its own,
+// with the same result shape as a finished nbc command; a runner the app
+// closed is not reported.
+function createMCPClient({ binary, args, env, spawnImpl = spawn, onExit }) {
+  const startedAt = Date.now();
   const child = spawnImpl(binary, args, { env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   const inheritedToolArguments = {};
   for (const option of ["--profile", "--runtime", "--runtime-bin"]) {
@@ -426,10 +431,20 @@ function createMCPClient({ binary, args, env, spawnImpl = spawn }) {
     }
   });
   child.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString()).slice(-MAX_OUTPUT_BYTES); });
-  child.once("error", (error) => { closed = true; rejectPending(error); });
-  child.once("close", (code) => {
+  const exited = (result, outcome) => {
+    try { onExit?.(result, outcome, Date.now() - startedAt); } catch { /* reporting never changes the run */ }
+  };
+  child.once("error", (error) => {
+    const unexpected = !closed;
+    closed = true;
+    rejectPending(error);
+    if (unexpected) exited({ code: -1, stdout: "", stderr: error.message }, { spawnError: true });
+  });
+  child.once("close", (code, signal) => {
+    const unexpected = !closed;
     closed = true;
     rejectPending(new Error(stderr.trim() || `Browser runner exited with code ${code ?? -1}.`));
+    if (unexpected) exited({ code: code ?? -1, stdout: "", stderr }, signal ? { signal } : {});
   });
 
   const send = (message) => {
@@ -473,7 +488,7 @@ async function executeAutomationRecipe(input, deps) {
   // value halfway through a workflow can leave forms or pages half-mutated.
   const validated = validateRecipe(input.recipe);
   const blocked = sharedScriptBlock({ sharedCopy: input.sharedCopy === true || !!sharedCopyMarker(input.recipe), actions: validated });
-  if (blocked) throw new Error(blocked);
+  if (blocked) throw userError(blocked);
   const actions = validated.map((action, index) => {
     const expanded = { ...action, arguments: expandTemplates(action.arguments, input.parameters || {}) };
     const missing = unresolvedTemplate(expanded.arguments);
@@ -483,7 +498,7 @@ async function executeAutomationRecipe(input, deps) {
   const profile = String(input.profile || "").trim();
   const runtime = ["clawbrowser", "camoufox", "chromium", "multilogin"].includes(input.runtime) ? input.runtime : "clawbrowser";
   const mcpArgs = [...(profile ? ["--profile", profile] : []), "--runtime", runtime, ...(input.runtimeBin ? ["--runtime-bin", input.runtimeBin] : []), "mcp"];
-  const client = createMCPClient({ binary: deps.binary, args: mcpArgs, env: deps.env, spawnImpl: deps.spawnImpl });
+  const client = createMCPClient({ binary: deps.binary, args: mcpArgs, env: deps.env, spawnImpl: deps.spawnImpl, onExit: deps.onRunnerExit });
   const state = { client, cancelled: false };
   activeExecutions.set(executionId, state);
   const results = [];

@@ -1,6 +1,7 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { createHash, randomUUID } = require("node:crypto");
+const { userError } = require("./user-error.cjs");
 
 const MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024;
 const MAX_VALIDATION_BYTES = 8 * 1024 * 1024;
@@ -92,7 +93,7 @@ function createLocalArtifactStore({ rootDir, now = () => Date.now(), makeId = ra
 
   async function addBytes(workspaceId, name, bytes, options = {}) {
     const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-    if (data.byteLength > MAX_ARTIFACT_BYTES) throw new Error(`${safeFileName(name)} is larger than 1 GiB.`);
+    if (data.byteLength > MAX_ARTIFACT_BYTES) throw userError(`${safeFileName(name)} is larger than 1 GiB.`);
     const location = await ensureWorkspace(workspaceId);
     const items = await readIndex(workspaceId);
     const id = makeId();
@@ -136,8 +137,8 @@ function createLocalArtifactStore({ rootDir, now = () => Date.now(), makeId = ra
       return enqueue(workspaceId, async () => {
         const stat = await fs.stat(filePath);
         const displayName = safeFileName(filePath);
-        if (!stat.isFile()) throw new Error(`${displayName} is not a regular file.`);
-        if (stat.size > MAX_ARTIFACT_BYTES) throw new Error(`${displayName} is larger than 1 GiB.`);
+        if (!stat.isFile()) throw userError(`${displayName} is not a regular file.`);
+        if (stat.size > MAX_ARTIFACT_BYTES) throw userError(`${displayName} is larger than 1 GiB.`);
         const location = await ensureWorkspace(workspaceId);
         const items = await readIndex(workspaceId);
         const id = makeId();
@@ -164,17 +165,17 @@ function createLocalArtifactStore({ rootDir, now = () => Date.now(), makeId = ra
 
     async resolvePath(workspaceId, id) {
       const item = (await readIndex(workspaceId)).find((candidate) => candidate.id === id);
-      if (!item) throw new Error("This local artifact no longer exists.");
+      if (!item) throw userError("This local artifact no longer exists.");
       const location = locations(workspaceId);
       const target = path.join(location.files, path.basename(item.storedName));
       const stat = await fs.stat(target).catch(() => null);
-      if (!stat?.isFile()) throw new Error("The artifact file was removed from local storage.");
+      if (!stat?.isFile()) throw userError("The artifact file was removed from local storage.");
       return target;
     },
 
     async validate(workspaceId, id) {
       const item = (await readIndex(workspaceId)).find((candidate) => candidate.id === id);
-      if (!item) throw new Error("This local artifact no longer exists.");
+      if (!item) throw userError("This local artifact no longer exists.");
       const target = await this.resolvePath(workspaceId, id);
       if (item.size <= 0) return { valid: false, reason: "The artifact is empty." };
       if (item.size > MAX_VALIDATION_BYTES) return { valid: true };

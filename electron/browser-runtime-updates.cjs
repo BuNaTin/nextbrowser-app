@@ -2,6 +2,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
+const { userError } = require("./user-error.cjs");
 
 const execFileAsync = promisify(execFile);
 
@@ -120,11 +121,13 @@ async function assertClawbrowserSessionsStopped({ sessionNames = [], statusSessi
     }
   }));
 
+  // The user closes these profiles and retries; both errors name profiles, so
+  // they stay out of error reports.
   if (unavailable.length) {
-    throw new Error(`Nextbrowser could not confirm these profiles are fully closed: ${unavailable.sort().join(", ")}.`);
+    throw userError(`Nextbrowser could not confirm these profiles are fully closed: ${unavailable.sort().join(", ")}.`);
   }
   if (active.length) {
-    throw new Error(`Clawbrowser is still running in: ${active.sort().join(", ")}. Stop these profiles before installing the update; Nextbrowser did not close them automatically.`);
+    throw userError(`Clawbrowser is still running in: ${active.sort().join(", ")}. Stop these profiles before installing the update; Nextbrowser did not close them automatically.`);
   }
 }
 

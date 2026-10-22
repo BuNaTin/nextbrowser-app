@@ -260,6 +260,40 @@ function describeProfileStartFailure({ action = "start", profile = "", runtime =
   };
 }
 
+/**
+ * The error report for a failed host start or stop, so the Ref the agent
+ * relays to the user can be looked up. A failure of the user's own setup
+ * (category "configuration": sign-in, the profile's proxy, traffic, a missing
+ * profile) is not reported. The profile name and nextctl's output stay out:
+ * the classifier's code says what failed, and an unexpected nextctl outcome is
+ * reported on its own by the nbc classifier.
+ */
+function describeProfileFailureEvent(failure) {
+  const error = failure?.error;
+  if (!error || error.category === "configuration") return { event: null };
+  const action = failure.action === "stop" ? "stop" : "start";
+  const code = /^[A-Z][A-Z0-9_]{1,63}$/.test(String(error.code || "")) ? error.code : "UNKNOWN";
+  const runtime = String(failure.runtime || "").toLowerCase();
+  const nextctlCode = String(failure.diagnostics?.nextctlCode || "");
+  return {
+    event: {
+      source: "main",
+      kind: "command_failed",
+      name: `HOST_PROFILE_${action.toUpperCase()}_FAILED`,
+      message: `agent profile ${action} failed: ${code} (${error.category})`,
+      context: {
+        code,
+        category: String(error.category || ""),
+        ref: String(error.ref || ""),
+        ...(RUNTIME_LABELS[runtime] ? { runtime } : {}),
+        ...(Number.isInteger(failure.diagnostics?.exitCode) ? { exit_code: String(failure.diagnostics.exitCode) } : {}),
+        ...(/^[A-Z][A-Z0-9_]{1,63}$/.test(nextctlCode) ? { nbc_code: nextctlCode } : {}),
+      },
+      fingerprintExtra: code,
+    },
+  };
+}
+
 // The host refuses some requests before nextctl runs. Neither refusal is
 // fixed by retrying the same request, so the agent must report it instead.
 function describeProfileRequestRejection(code, profile) {
@@ -315,6 +349,7 @@ function logProfileStartFailure(dir, failure, context = {}) {
 
 module.exports = {
   LOG_FILE,
+  describeProfileFailureEvent,
   describeProfileRequestRejection,
   describeProfileStartFailure,
   logProfileStartFailure,

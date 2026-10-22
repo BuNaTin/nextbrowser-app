@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { agentFailureReason, describeAgentResult } = require("./agent-failure-report.cjs");
+const os = require("node:os");
+const { agentFailureReason, describeAgentResult, describeTerminalExit } = require("./agent-failure-report.cjs");
 
 const codexLog = [
   "OpenAI Codex v0.163.0 (research preview)",
@@ -69,4 +70,66 @@ test("success, a stop, quitting and a sign-in are not reported", () => {
 
 test("an unexpected agent id is not sent as is", () => {
   assert.equal(describeAgentResult({ agentId: "../../etc", result: { code: 1, stdout: "", stderr: "" } }).event.context.agent, "unknown");
+});
+
+test("a run that exits 0 without a reply is reported without its error output", () => {
+  const { reason, event } = describeAgentResult({
+    agentId: "antigravity",
+    result: { code: 0, stdout: "  \n", stderr: `${codexLog}\nwarning: quota low for alice@shop.example` },
+    durationMs: 812,
+  });
+  assert.equal(reason, "");
+  assert.deepEqual(event, {
+    source: "agent",
+    kind: "command_failed",
+    name: "AGENT_EMPTY_REPLY",
+    message: "antigravity exited with code 0 without a reply",
+    context: { agent: "antigravity", exit_code: "0", run: "chat", duration_ms: "812" },
+    fingerprintExtra: "antigravity",
+  });
+  assert.ok(!JSON.stringify(event).includes("shop"));
+  assert.equal(describeAgentResult({ agentId: "codex", result: { code: 0, stdout: "", stderr: "" }, outcome: { stopped: true } }).event, null, "a stopped run");
+  assert.equal(describeAgentResult({ agentId: "codex", result: { code: 0, stdout: "", stderr: "" }, outcome: { quitting: true } }).event, null, "quitting");
+});
+
+test("a run the app stopped for taking too long is reported as a timeout", () => {
+  const { event } = describeAgentResult({ agentId: "claude", result: { code: -1, stdout: "partial draft about the post", stderr: "" }, outcome: { timedOut: true }, plain: true, durationMs: 180_000 });
+  assert.equal(event.name, "AGENT_TIMED_OUT");
+  assert.equal(event.message, "claude did not finish in time and was stopped");
+  assert.deepEqual(event.context, { agent: "claude", exit_code: "-1", run: "plain", duration_ms: "180000" });
+  assert.ok(!JSON.stringify(event).includes("draft"));
+  assert.equal(describeAgentResult({ agentId: "claude", result: { code: -1, stdout: "", stderr: "" }, outcome: { timedOut: true, quitting: true } }).event, null);
+});
+
+test("a workflow author run is reported as its own run", () => {
+  const failed = describeAgentResult({ agentId: "codex", result: { code: 1, stdout: "", stderr: "Error: unknown option '--json'" }, run: "workflow_author" });
+  assert.equal(failed.event.name, "AGENT_STOPPED_UNEXPECTEDLY");
+  assert.equal(failed.event.context.run, "workflow_author");
+  assert.equal(describeAgentResult({ agentId: "codex", result: { code: 0, stdout: "", stderr: "" }, run: "workflow_author" }).event.name, "AGENT_EMPTY_REPLY");
+  assert.equal(describeAgentResult({ agentId: "codex", result: { code: 1, stdout: "", stderr: "" }, run: "anything" }).event.context.run, "chat");
+});
+
+test("a terminal CLI that ends with an error or a crash is reported", () => {
+  const { event } = describeTerminalExit({ agentId: "codex", exitCode: 1, signal: 0, uptimeMs: 2310.6 });
+  assert.deepEqual(event, {
+    source: "agent",
+    kind: "command_failed",
+    name: "TERMINAL_EXITED_UNEXPECTEDLY",
+    message: "codex terminal exited with code 1",
+    context: { agent: "codex", exit_code: "1", run: "terminal", uptime_ms: "2311" },
+    fingerprintExtra: "codex",
+  });
+  const segfault = describeTerminalExit({ agentId: "claude", exitCode: 0, signal: os.constants.signals.SIGSEGV }).event;
+  assert.equal(segfault.message, "claude terminal exited with signal SIGSEGV");
+  assert.equal(segfault.context.signal, "SIGSEGV");
+  assert.equal(describeTerminalExit({ agentId: "claude", exitCode: 0, signal: os.constants.signals.SIGABRT }).event.context.signal, "SIGABRT", "not its SIGIOT alias");
+});
+
+test("a terminal the app closed, the user ended or interrupted is not reported", () => {
+  assert.equal(describeTerminalExit({ agentId: "codex", exitCode: 1, closedByApp: true }).event, null);
+  assert.equal(describeTerminalExit({ agentId: "codex", exitCode: 0 }).event, null);
+  assert.equal(describeTerminalExit({ agentId: "codex", exitCode: 0, signal: os.constants.signals.SIGHUP }).event, null);
+  assert.equal(describeTerminalExit({ agentId: "codex", exitCode: 130 }).event, null);
+  assert.equal(describeTerminalExit({ agentId: "codex", exitCode: 3221225786 }).event, null);
+  assert.equal(describeTerminalExit({ agentId: "../evil", exitCode: 2 }).event.context.agent, "unknown");
 });

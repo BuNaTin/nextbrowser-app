@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  describeProfileFailureEvent,
   describeProfileRequestRejection,
   describeProfileStartFailure,
   logProfileStartFailure,
@@ -186,4 +187,42 @@ test("logs each failure as one JSON line keyed by its Ref and rotates a large lo
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a host start failure is reported with its Ref and without the profile or nextctl output", () => {
+  const failure = describeProfileStartFailure({
+    profile: "Alice private shop",
+    runtime: "clawbrowser",
+    result: { code: 1, stdout: envelope("LAUNCH_FAILED", "launch Alice private shop: fork/exec /Users/alice/x: exec format error"), stderr: "" },
+    ref: "NB-1234ABCD",
+  });
+  const { event } = describeProfileFailureEvent(failure);
+  assert.deepEqual(event, {
+    source: "main",
+    kind: "command_failed",
+    name: "HOST_PROFILE_START_FAILED",
+    message: "agent profile start failed: LAUNCH_FAILED (retryable)",
+    context: { code: "LAUNCH_FAILED", category: "retryable", ref: "NB-1234ABCD", runtime: "clawbrowser", exit_code: "1", nbc_code: "LAUNCH_FAILED" },
+    fingerprintExtra: "LAUNCH_FAILED",
+  });
+  assert.ok(!JSON.stringify(event).includes("Alice"));
+});
+
+test("a host stop that threw before nextctl ran is reported as a stop", () => {
+  const failure = describeProfileStartFailure({ action: "stop", profile: "p", runtime: "dasbrowser", error: new Error("Could not mount DasBrowser installer."), ref: "NB-00000001" });
+  const { event } = describeProfileFailureEvent(failure);
+  assert.equal(event.name, "HOST_PROFILE_STOP_FAILED");
+  assert.equal(event.context.code, "HOST_ERROR");
+  assert.equal(event.context.ref, "NB-00000001");
+  assert.equal(event.context.runtime, "dasbrowser");
+});
+
+test("a host failure of the user's own setup is not reported", () => {
+  for (const code of ["API_KEY_REQUIRED", "PROXY_TRAFFIC_EXHAUSTED", "PROFILE_NOT_FOUND"]) {
+    const failure = describeProfileStartFailure({ profile: "p", runtime: "clawbrowser", result: { code: 1, stdout: envelope(code, "x"), stderr: "" } });
+    assert.equal(describeProfileFailureEvent(failure).event, null, code);
+  }
+  const proxy = describeProfileStartFailure({ profile: "p", runtime: "clawbrowser", result: { code: 1, stdout: envelope("LAUNCH_FAILED", "net::ERR_PROXY_CONNECTION_FAILED"), stderr: "" } });
+  assert.equal(describeProfileFailureEvent(proxy).event, null);
+  assert.equal(describeProfileFailureEvent(undefined).event, null);
 });

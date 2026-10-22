@@ -36,6 +36,8 @@ async function githubStarRequest(route, method, deps = {}) {
   } catch (cause) {
     const error = new Error("Nextbrowser could not reach the service. Check your internet connection and try again.");
     error.cause = cause;
+    // The request observer reports the network failure.
+    error.reported = true;
     throw error;
   }
   const text = await response.text();
@@ -51,6 +53,9 @@ async function githubStarRequest(route, method, deps = {}) {
     );
     error.status = response.status;
     error.code = typeof body?.code === "string" ? body.code : undefined;
+    // The observer reports a 5xx; a 4xx says the star is not there yet.
+    if (response.status >= 500) error.reported = true;
+    else error.expected = true;
     throw error;
   }
   return normalizeGitHubStarStatus(body);

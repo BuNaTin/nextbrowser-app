@@ -1,4 +1,5 @@
 const { createMCPClient } = require("./automation-runner.cjs");
+const { userError } = require("./user-error.cjs");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
@@ -293,7 +294,7 @@ async function collect(state) {
 
 async function startAutomationPageRecording(input, deps) {
   const recordingId = cleanId(input.recordingId);
-  if (activeRecorders.size) throw new Error("Stop the current browser recording before starting another one.");
+  if (activeRecorders.size) throw userError("Stop the current browser recording before starting another one.");
   const profile = String(input.profile || "").trim();
   const runtime = ["clawbrowser", "camoufox", "chromium", "multilogin"].includes(input.runtime) ? input.runtime : "clawbrowser";
   const args = [...(profile ? ["--profile", profile] : []), "--runtime", runtime,
@@ -303,7 +304,7 @@ async function startAutomationPageRecording(input, deps) {
   const traceDir = await fs.mkdtemp(path.join(os.tmpdir(), "nextbrowser-recording-"));
   const traceFile = path.join(traceDir, "mcp-actions.jsonl");
   await fs.writeFile(traceFile, "", { mode: 0o600 });
-  const state = { client: null, clientOptions: { binary: deps.binary, args, env: deps.env, spawnImpl: deps.spawnImpl }, profile, runtime, actions: [], seenEventIds: new Set(), traceFile, traceDir, currentUrl: "", currentPageId: "", title: "", lastPageInteractionAt: 0, polling: false, stopping: false, closed: false, attaching: null, lastError: "", cdpEndpoint: "", cdpInitialized: false, cdpTargets: new Map() };
+  const state = { client: null, clientOptions: { binary: deps.binary, args, env: deps.env, spawnImpl: deps.spawnImpl, onExit: deps.onRunnerExit }, profile, runtime, actions: [], seenEventIds: new Set(), traceFile, traceDir, currentUrl: "", currentPageId: "", title: "", lastPageInteractionAt: 0, polling: false, stopping: false, closed: false, attaching: null, lastError: "", cdpEndpoint: "", cdpInitialized: false, cdpTargets: new Map() };
   activeRecorders.set(recordingId, state);
   try {
     if (input.attach !== false) await attachAutomationPageRecording(recordingId);

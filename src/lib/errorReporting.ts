@@ -169,16 +169,20 @@ export function reportUserFacingError({ surface, code, ref }: UserFacingErrorRep
 
 /**
  * Reports a message the app showed, by the last Ref in it that this window
- * made (the Ref says which error code it stands for), or else by
- * `fallbackCode`. A Ref from elsewhere, such as a message saved before a
- * restart or a profile start failure the main process worded, is not
+ * made (the Ref says which error code it stands for). Without such a Ref, or
+ * when that Ref was already reported, `fallbackCode` is reported instead,
+ * if given. A Ref from elsewhere, such as one in a message saved before a
+ * restart or in a profile start failure the main process worded, is never
  * reported here. The message text is never sent.
  */
 export function reportUserFacingMessage(surface: string, message: string, fallbackCode?: string): boolean {
   const refs = errorRefsIn(message);
   for (let index = refs.length - 1; index >= 0; index -= 1) {
-    const code = errorCodeForRef(refs[index]);
-    if (code) return reportUserFacingError({ surface, code, ref: refs[index] });
+    const ref = refs[index];
+    const code = errorCodeForRef(ref);
+    if (!code) continue;
+    if (!reportedRefs.has(ref)) return reportUserFacingError({ surface, code, ref });
+    break;
   }
   return fallbackCode ? reportUserFacingError({ surface, code: fallbackCode }) : false;
 }

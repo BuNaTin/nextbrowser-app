@@ -5,6 +5,8 @@ import type { Conversation, ScheduledRun, Workspace } from "./types";
 const bridge = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
 vi.mock("./electronBridge", () => ({ ...bridge, filePathForFile: () => "" }));
 vi.mock("./lib/analytics", () => ({ setAnalyticsUserId: vi.fn(), trackEvent: vi.fn(), trackScreenView: vi.fn(), trackTiming: vi.fn() }));
+const reporting = vi.hoisted(() => ({ reportUserFacingError: vi.fn(), reportUserFacingMessage: vi.fn() }));
+vi.mock("./lib/errorReporting", () => reporting);
 
 type Handler = (payload?: { args?: string[] }) => unknown;
 const storage = new Map<string, string>();
@@ -78,6 +80,7 @@ beforeEach(() => {
   });
   bridge.invoke.mockReset();
   bridge.invoke.mockImplementation(invokeWith());
+  reporting.reportUserFacingMessage.mockClear();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -128,6 +131,9 @@ describe("a scheduled run that cannot start", () => {
 
     expect(runState(useStore).lastFiredAt).toBeUndefined();
     expect(runState(useStore).lastError).toMatch(/Codex not found/);
+    // Nobody may open the schedule for days, so the failure is reported.
+    expect(reporting.reportUserFacingMessage).toHaveBeenCalledOnce();
+    expect(reporting.reportUserFacingMessage).toHaveBeenCalledWith("scheduled-run-start", runState(useStore).lastError, "SCHEDULED_AGENT_NOT_CONNECTED");
     // No empty chat and no dropped prompt.
     expect(scheduledChats(useStore)).toEqual([]);
     expect(useStore.getState().runtime.codex.queue).toEqual([]);
@@ -156,6 +162,8 @@ describe("a scheduled run that cannot start", () => {
     expect(runState(useStore).lastFiredAt).toBeUndefined();
     expect(runState(useStore).lastError).toMatch(/Codex is signed out/);
     expect(scheduledChats(useStore)).toEqual([]);
+    // Signing in is the user's to do; it is not an app error.
+    expect(reporting.reportUserFacingMessage).not.toHaveBeenCalled();
   });
 
   it("waits for an agent that is still connecting, and says so if it never finishes", async () => {
@@ -198,6 +206,7 @@ describe("a scheduled run before the profile list has loaded", () => {
     await useStore.getState().tickScheduledRuns();
     expect(runState(useStore).lastFiredAt).toBeUndefined();
     expect(runState(useStore).lastError).toMatch(/profile list has not loaded/);
+    expect(reporting.reportUserFacingMessage).toHaveBeenCalledWith("scheduled-run-start", runState(useStore).lastError, "SCHEDULED_PROFILE_LIST_NOT_LOADED");
   });
 
   it("still reports a profile that is really gone once the inventory has loaded", async () => {
@@ -207,6 +216,7 @@ describe("a scheduled run before the profile list has loaded", () => {
     await useStore.getState().tickScheduledRuns();
     expect(runState(useStore).lastFiredAt).toBeUndefined();
     expect(runState(useStore).lastError).toMatch(/no longer in this workspace/);
+    expect(reporting.reportUserFacingMessage).not.toHaveBeenCalled();
   });
 });
 

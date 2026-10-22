@@ -18,6 +18,9 @@ vi.mock("./lib/analytics", () => ({
   trackTiming: vi.fn(),
 }));
 
+const reporting = vi.hoisted(() => ({ reportUserFacingError: vi.fn(), reportUserFacingMessage: vi.fn() }));
+vi.mock("./lib/errorReporting", () => reporting);
+
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
   return {
@@ -99,6 +102,7 @@ beforeEach(() => {
   vi.stubGlobal("localStorage", memoryStorage());
   bridge.invoke.mockReset();
   bridge.listen.mockReset();
+  reporting.reportUserFacingError.mockClear();
 });
 
 afterEach(() => {
@@ -565,6 +569,11 @@ describe("foreground startup deadline", () => {
       expect(useStore.getState().startupError).toContain("taking longer than expected");
       expect(useStore.getState().startupPhase).toBe(blockedCommand === "app_data_read" ? "local" : "account");
       expect(useStore.getState().accountEmail).toBeUndefined();
+      // Only the user sees the splash, so it is reported, naming the stalled phase.
+      expect(reporting.reportUserFacingError).toHaveBeenCalledWith({
+        surface: "startup",
+        code: blockedCommand === "app_data_read" ? "STARTUP_LOCAL_TIMED_OUT" : "STARTUP_ACCOUNT_TIMED_OUT",
+      });
     },
   );
 
@@ -580,6 +589,7 @@ describe("foreground startup deadline", () => {
     expect(useStore.getState()).toMatchObject({ checking: false, authed: true, startupError: undefined });
     await vi.advanceTimersByTimeAsync(12_000);
     expect(useStore.getState().startupError).toBeUndefined();
+    expect(reporting.reportUserFacingError).not.toHaveBeenCalled();
   });
 
   it("does not wait for an update that continues in the background", async () => {
@@ -617,5 +627,6 @@ describe("foreground startup deadline", () => {
     await useStore.getState().bootstrap();
     expect(useStore.getState().checking).toBe(false);
     expect(useStore.getState().startupError).toContain("couldn't finish startup");
+    expect(reporting.reportUserFacingError).toHaveBeenCalledWith({ surface: "startup", code: expect.stringMatching(/^STARTUP_(LOCAL|ACCOUNT)_FAILED$/) });
   });
 });

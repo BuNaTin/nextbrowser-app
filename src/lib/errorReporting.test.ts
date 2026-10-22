@@ -5,13 +5,14 @@ import {
   recordUiAction,
   reportRendererError,
   reportUserFacingError,
+  reportUserFacingMessage,
   resetErrorReportingForTests,
   setErrorReportingView,
   unexpectedErrorReference,
   type RendererErrorReport,
 } from "./errorReporting";
 import { trackEvent } from "./analytics";
-import { errorReference } from "./userFacingError";
+import { errorReference, errorRefsIn, internalError } from "./userFacingError";
 
 type Listener = (event: unknown) => void;
 
@@ -155,6 +156,24 @@ describe("renderer error reporting", () => {
     expect(env.reports).toHaveLength(1);
     expect(env.reports[0].context).toEqual({ surface: "agent-turn", code: "AGENT_START_FAILED" });
     expect(JSON.stringify(env.reports)).not.toContain("reply");
+  });
+
+  it("reports a shown message by the code behind its Ref, or else by the caller's code", () => {
+    const shown = `Could not start: ${internalError("We couldn't connect Codex.", "AGENT_CONNECT_FAILED")}`;
+    const [ref] = errorRefsIn(shown);
+    expect(reportUserFacingMessage("scheduled-run-start", shown, "SCHEDULED_AGENT_NOT_CONNECTED")).toBe(true);
+    // The incident is reported once; the schedule's own failure still counts.
+    expect(reportUserFacingMessage("scheduled-run-start", shown, "SCHEDULED_AGENT_NOT_CONNECTED")).toBe(true);
+    expect(reportUserFacingMessage("agent-chat", shown)).toBe(false);
+    // A Ref the window did not make says nothing about the code.
+    expect(reportUserFacingMessage("x-monitor-pass", "Failed. Ref: NB-0000ABCD", "X_MONITOR_PASS_FAILED")).toBe(true);
+    expect(reportUserFacingMessage("x-monitor-pass", "Failed. Ref: NB-0000ABCD")).toBe(false);
+    expect(env.reports.map((report) => report.context)).toEqual([
+      { surface: "scheduled-run-start", code: "AGENT_CONNECT_FAILED", ref },
+      { surface: "scheduled-run-start", code: "SCHEDULED_AGENT_NOT_CONNECTED" },
+      { surface: "x-monitor-pass", code: "X_MONITOR_PASS_FAILED" },
+    ]);
+    expect(JSON.stringify(env.reports)).not.toContain("Codex");
   });
 
   it("is a no-op without the bridge and never throws", () => {

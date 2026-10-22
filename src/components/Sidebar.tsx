@@ -1711,7 +1711,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
           </button>
         )}
       </div>
-      {logoutError && <div className="sidebar-account-error" role="alert">{logoutError}</div>}
+      {logoutError && <div className="sidebar-account-error" role="alert"><UserFacingError message={logoutError} surface="account_sign_out" /></div>}
       <div className="nextctl-footer muted small">
         <Icon name="terminal" size={12} />
         <span>nextctl {s.nextctlVersion || "..."}</span>
@@ -2220,7 +2220,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
               <input value={workspaceName} maxLength={entityNameLimits.workspace} onChange={(event) => { setWorkspaceName(event.target.value); setWorkspaceError(null); }} placeholder="New workspace" autoFocus />
             </label>
             <p className="muted small workspace-create-note">Chats and profiles created here stay inside this workspace.</p>
-            {workspaceError && <div className="error small">{workspaceError}</div>}
+            {workspaceError && <div className="error small"><UserFacingError message={workspaceError} surface="workspace_create" /></div>}
             <div className="modal-actions">
               <button type="button" className="secondary" disabled={workspaceSaving} onClick={() => { setWorkspaceCreatorOpen(false); setWorkspaceError(null); }}>Cancel</button>
               <button type="submit" className="primary" disabled={workspaceSaving || !workspaceName.trim()}>
@@ -2376,7 +2376,7 @@ export function Sidebar({ onOpenAgentSettings, onHome, footerAccessory }: Sideba
                   </select>
                   {profileBusy && <div className="muted small profile-workspace-note">Stop the profile to move it.</div>}
                   {!profileBusy && s.projectsSyncing && <div className="muted small profile-workspace-note">Syncing workspaces…</div>}
-                  {profileMoveError && <div className="error small profile-workspace-note">{profileMoveError}</div>}
+                  {profileMoveError && <div className="error small profile-workspace-note"><UserFacingError message={profileMoveError} surface="profile_workspace_move" /></div>}
                 </>
               )}
 

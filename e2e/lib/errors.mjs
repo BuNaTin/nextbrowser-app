@@ -22,7 +22,9 @@ const SCAN = `(() => {
   return [...out];
 })()`;
 
-const REF = /Ref: (NB-[A-F0-9]{8})/;
+// "NB-<code hash>" or, since per-incident Refs, "NB-<code hash>-<incident>";
+// the code hash part is what a backend report can be matched by.
+const REF = /Ref: (NB-[A-F0-9]{8})(?:-[A-F0-9]{4})?/;
 
 export class ErrorWatch {
   constructor() {
@@ -50,8 +52,7 @@ export class ErrorWatch {
     try { texts = await page.evaluate(SCAN); } catch { return []; }
     const fresh = [];
     for (const text of texts) {
-      const key = `${this.step}\n${text}`;
-      if (this.seen.has(text) || this.seen.has(key)) continue;
+      if (this.seen.has(text)) continue;
       this.seen.add(text);
       const entry = { at: new Date().toISOString(), step: this.step, text, ref: text.match(REF)?.[1] ?? "" };
       this.ui.push(entry);

@@ -250,7 +250,7 @@ describe("the account chrome on the post page", () => {
       inspect: pageState({ login_wall: true, identity: { present: false, session: false, handle: "", matches: false } }),
     });
     const outcome = await publishReply(browser, request, noSleep);
-    expect(outcome).toEqual({ status: "refused", reason: "The browser profile is not signed in to x.com." });
+    expect(outcome).toEqual({ status: "refused", reason: "The browser profile is not signed in to x.com.", account: true });
   });
 
   it("says what the page was when it refuses", async () => {

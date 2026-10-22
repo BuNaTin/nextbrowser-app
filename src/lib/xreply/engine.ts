@@ -35,6 +35,7 @@ import { loadPage, type LoadedPage } from "./page";
 import { draftReply, type AgentRunner } from "./draft";
 import { describeDiag, publishReply, type GifOptions } from "./publish";
 import { compact, errorText, xlog } from "./log";
+import { reportUserFacingError } from "../errorReporting";
 import { DEFAULT_GIF_BLOCKLIST } from "./reaction";
 import {
   DEFAULT_REPLY_MAX_LENGTH,
@@ -57,6 +58,12 @@ import {
 } from "./state";
 
 const NOTIFICATIONS_URL = "https://x.com/notifications";
+
+/** A failure the user finds only as a note on the panel. The report names it
+ *  by code; the note, which quotes posts and pages, is never sent. */
+function reportPassFailure(code: string): void {
+  reportUserFacingError({ surface: "x-reply-pass", code });
+}
 /** A notice says the newest post is what matters, so the read that follows it
  *  is deliberately small. Ported from noticeReadLimit. */
 const NOTICE_READ_LIMIT = 5;
@@ -387,6 +394,7 @@ export async function runPass(deps: PassDeps): Promise<PassResult> {
           // for the next pass rather than sending the user to sign in again.
           summary.failed += 1;
           note(`@${handle}: ${unrendered(page, "the profile")}`);
+          reportPassFailure("X_PROFILE_NOT_RENDERED");
           state = withHandleState(state, handle, { lastCheckedAt: deps.now() });
           continue;
         }
@@ -421,6 +429,7 @@ export async function runPass(deps: PassDeps): Promise<PassResult> {
       if (!feedPage.rendered && !feedPage.login_wall) {
         summary.blocked = "x.com did not render the notifications feed";
         note(unrendered(feedPage, "the notifications feed"));
+        reportPassFailure("X_FEED_NOT_RENDERED");
         return finish();
       }
       const verdict = await verifyPublisher(deps, state, summary, note);
@@ -527,6 +536,7 @@ export async function runPass(deps: PassDeps): Promise<PassResult> {
       summary.failed += 1;
       xlog("pass.error", { error: errorText(error) });
       note(errorText(error));
+      reportPassFailure("X_REPLY_PASS_FAILED");
     }
   }
 
@@ -555,6 +565,7 @@ async function verifyPublisher(
     // and stops instead.
     summary.blocked = "Signed in, but x.com did not name the account";
     note("Signed in to x.com, but the page did not say which account. Open x.com in this profile and reload it.");
+    reportPassFailure("X_ACCOUNT_NOT_IDENTIFIED");
     return { state, ok: false };
   }
   if (state.publisherHandle && state.publisherHandle.toLowerCase() !== publisher.handle.toLowerCase()) {
@@ -671,6 +682,7 @@ async function draftPosts(
       failure = errorText(error);
       xlog("draft.failed", { handle, post: post.url, error: failure });
       addNote(summary, `@${handle}: ${failure}`);
+      reportPassFailure("X_REPLY_DRAFT_FAILED");
     }
     if (failure) {
       // A post the agent could not draft is not a post that was answered. The
@@ -685,6 +697,7 @@ async function draftPosts(
       }
       // Out of attempts: give this one post up rather than stall the account.
       addNote(summary, `@${handle}: gave up on ${post.url} after ${attempts} attempts.`);
+      reportPassFailure("X_REPLY_DRAFT_GAVE_UP");
     }
     // Seen and settled — drafted, or given up on. The watermark moves so the
     // feed does not re-read it every pass.
@@ -752,12 +765,16 @@ export async function sendDraft(
       // could double-post, and only a human can tell which happened.
       let next = updateDraft(state, draft.id, { status: "unverified", sentAt: at, error: outcome.reason, attempts });
       next = recordReply(next, { postId: draft.postId, repliedAt: at });
+      reportPassFailure("X_REPLY_UNVERIFIED");
       return { state: next, sent: false, failed: true };
     }
     default: {
       // Nothing was submitted, so a transient page problem may be retried —
       // bounded, and only when the user asked for unattended sending.
       const retryable = state.autoRetry && attempts < state.maxAttempts;
+      // The account the page is signed in as is the user's to fix; a page the
+      // gates could not get through is ours to look at.
+      if (!retryable && !("account" in outcome && outcome.account)) reportPassFailure("X_REPLY_PUBLISH_REFUSED");
       return {
         state: updateDraft(state, draft.id, {
           status: retryable ? "approved" : "failed",

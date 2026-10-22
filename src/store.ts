@@ -1700,14 +1700,29 @@ function proxyTunnelLost(message: string): boolean {
   return /ERR_TUNNEL_CONNECTION_FAILED/i.test(message);
 }
 
+function accountUnauthorized(message: string): boolean {
+  return /API_KEY|not authorized|unauthorized/i.test(message);
+}
+
 /** friendlyXReplyError keeps a CDP transcript out of the panel. */
 function friendlyXReplyError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (sessionLost(message)) return "The browser session was lost. Press Start again to reopen it.";
-  if (/API_KEY|not authorized|unauthorized/i.test(message)) return "Nextbrowser could not authenticate. Reconnect your account.";
+  if (accountUnauthorized(message)) return "Nextbrowser could not authenticate. Reconnect your account.";
   // The Ref makes the panel offer the Discord link, as other internal errors do.
   if (isBrowserVerificationFailure(message)) return internalError(userFacingBrowserError(message), "VERIFY_FAILED");
   return message.replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+/**
+ * Reports a watch or monitoring pass that failed before it could run. The
+ * user finds it only as a note; `shown` is that note, whose Ref, if any, is
+ * the incident. A signed-out account is the user's to fix and is not
+ * reported.
+ */
+function reportPassFailure(surface: string, code: string, error: unknown, shown: string): void {
+  if (accountUnauthorized(error instanceof Error ? error.message : String(error))) return;
+  reportUserFacingMessage(surface, shown, code);
 }
 
 // Nothing writes this file per keystroke any more, and a deferred write is a
@@ -6708,6 +6723,7 @@ export const useStore = create<State>((set, get) => {
       persistXReplyState(state);
       set({ xReplyState: state });
       trackEvent("x_reply_pass_failed", {});
+      reportPassFailure("x-reply-pass", "X_REPLY_SESSION_FAILED", error, state.lastPassSummary ?? "");
     } finally {
       set({ xReplyBusy: false, xReplyStep: undefined });
     }
@@ -6946,6 +6962,8 @@ export const useStore = create<State>((set, get) => {
       }, at);
       void saveJson(X_MONITOR_STATE_FILE, result.state);
       void saveJson(X_MONITOR_FEED_FILE, xMonitorFeed);
+      // A page the reader could not make sense of: a site change, or a refusal.
+      if (result.summary.blocked) reportUserFacingError({ surface: "x-monitor-pass", code: "X_MONITOR_PASS_BLOCKED" });
       // Monitoring keeps its own record of the account; the reply agent's state
       // is the reply agent's alone.
       set({ xMonitorState: result.state, xMonitorFeed });
@@ -6957,13 +6975,15 @@ export const useStore = create<State>((set, get) => {
     } catch (error) {
       xMonitorLog({ t: new Date().toISOString(), ev: "run.error", error: xReplyErrorText(error) });
       const at = now();
+      const shown = friendlyXReplyError(error);
       const xMonitorState: MonitorState = {
         ...get().xMonitorState,
-        lastPass: { at, finishedAt: at, newPosts: 0, followerChanges: 0, notes: [friendlyXReplyError(error)] },
+        lastPass: { at, finishedAt: at, newPosts: 0, followerChanges: 0, notes: [shown] },
       };
       void saveJson(X_MONITOR_STATE_FILE, xMonitorState);
       set({ xMonitorState });
       trackEvent("x_monitor_pass_failed", {});
+      reportPassFailure("x-monitor-pass", "X_MONITOR_PASS_FAILED", error, shown);
     } finally {
       xMonitorPassActive = false;
       set({ xReplyBusy: false, xReplyStep: undefined });
@@ -7001,6 +7021,9 @@ export const useStore = create<State>((set, get) => {
       void saveJson(REDDIT_MONITOR_STATE_FILE, redditMonitorState);
       void saveJson(REDDIT_MONITOR_FEED_FILE, redditMonitorFeed);
       set({ redditMonitorState, redditMonitorFeed });
+      if (result.summary.blocked && !result.summary.rateLimited) {
+        reportUserFacingError({ surface: "reddit-monitor-pass", code: "REDDIT_MONITOR_PASS_BLOCKED" });
+      }
       trackEvent("reddit_monitor_pass_finished", {
         new_items: result.summary.newItems,
         urgent: result.summary.urgent,
@@ -7011,13 +7034,15 @@ export const useStore = create<State>((set, get) => {
     } catch (error) {
       redditMonitorLog({ t: new Date().toISOString(), ev: "run.error", error: xReplyErrorText(error) });
       const at = now();
+      const shown = friendlyXReplyError(error);
       const redditMonitorState: RedditMonitorState = {
         ...get().redditMonitorState,
-        lastPass: { at, finishedAt: at, newItems: 0, urgent: 0, countChanges: 0, notes: [friendlyXReplyError(error)] },
+        lastPass: { at, finishedAt: at, newItems: 0, urgent: 0, countChanges: 0, notes: [shown] },
       };
       void saveJson(REDDIT_MONITOR_STATE_FILE, redditMonitorState);
       set({ redditMonitorState });
       trackEvent("reddit_monitor_pass_failed", {});
+      reportPassFailure("reddit-monitor-pass", "REDDIT_MONITOR_PASS_FAILED", error, shown);
     } finally {
       redditMonitorPassActive = false;
       set({ redditMonitorBusy: false, redditMonitorStep: undefined });
@@ -7080,6 +7105,9 @@ export const useStore = create<State>((set, get) => {
       void saveJson(social.files.state, state);
       void saveJson(social.files.feed, feed);
       setSlot({ state, feed });
+      if (result.summary.blocked && !result.summary.rateLimited && !result.summary.securityCheck) {
+        reportUserFacingError({ surface: `${engine}-pass`, code: `${engine.replace(/-/g, "_").toUpperCase()}_PASS_BLOCKED` });
+      }
       trackEvent(`${engine.replace(/-/g, "_")}_pass_finished`, {
         new_items: result.summary.newItems,
         urgent: result.summary.urgent,
@@ -7091,10 +7119,12 @@ export const useStore = create<State>((set, get) => {
     } catch (error) {
       log({ t: new Date().toISOString(), ev: "run.error", error: xReplyErrorText(error) });
       const at = now();
-      const state: SocialState = { ...slot()!.state, lastPass: { at, finishedAt: at, notes: [friendlyXReplyError(error)] } };
+      const shown = friendlyXReplyError(error);
+      const state: SocialState = { ...slot()!.state, lastPass: { at, finishedAt: at, notes: [shown] } };
       void saveJson(social.files.state, state);
       setSlot({ state });
       trackEvent(`${engine.replace(/-/g, "_")}_pass_failed`, {});
+      reportPassFailure(`${engine}-pass`, `${engine.replace(/-/g, "_").toUpperCase()}_PASS_FAILED`, error, shown);
     } finally {
       stop.active = false;
       setSlot({ busy: false, step: undefined });

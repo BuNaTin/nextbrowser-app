@@ -51,8 +51,10 @@ export interface GifOptions {
 export type PublishOutcome =
   | { status: "published"; replyUrl?: string; gif?: string }
   | { status: "already-published"; replyUrl: string }
-  /** Nothing was submitted. Retrying later is safe. */
-  | { status: "refused"; reason: string }
+  /** Nothing was submitted. Retrying later is safe. `account` marks a refusal
+   *  over the signed-in account (signed out, another account), which is the
+   *  user's to fix rather than a page the app failed to drive. */
+  | { status: "refused"; reason: string; account?: true }
   /** Submit was clicked but the result could not be confirmed. Never resent. */
   | { status: "unverified"; reason: string };
 
@@ -116,13 +118,17 @@ export async function publishReply(
   const note = options.onNote ?? (() => undefined);
   // Every refusal goes into the log with the page that caused it. The reason
   // is what the panel shows; the diagnostics are what explain it later.
-  const refuse = (reason: string, seen?: { url: string; diag?: PageDiag; identity?: PageState["identity"] }): PublishOutcome => {
+  const refuse = (
+    reason: string,
+    seen?: { url: string; diag?: PageDiag; identity?: PageState["identity"] },
+    account?: true,
+  ): PublishOutcome => {
     xlog("publish.refused", { post: request.postUrl, reason, url: seen?.url, identity: seen?.identity, diag: seen?.diag });
-    return { status: "refused", reason };
+    return { status: "refused", reason, ...(account ? { account } : {}) };
   };
   const postId = postIdFromUrl(request.postUrl);
   if (!postId) return refuse("The source URL carries no post id.");
-  if (!request.publisherHandle) return refuse("No publishing account is configured.");
+  if (!request.publisherHandle) return refuse("No publishing account is configured.", undefined, true);
 
   const inspect = () =>
     browser.evaluate<PageState>(inspectScript(postId, request.replyText, request.publisherHandle), "inspect");
@@ -150,7 +156,7 @@ export async function publishReply(
     await browser.waitForSelector(IDENTITY_READY_SELECTOR, IDENTITY_WAIT_SECONDS).catch(() => undefined);
     state = await inspect();
   }
-  if (state.login_wall) return refuse("The browser profile is not signed in to x.com.", state);
+  if (state.login_wall) return refuse("The browser profile is not signed in to x.com.", state, true);
   if (!state.identity.session) {
     // No sign-in wall and no account chrome either: a page x.com only half
     // drew, or not the page at all. Neither is cured by signing in again, so
@@ -164,7 +170,7 @@ export async function publishReply(
     return refuse("x.com did not say which account is signed in, so the reply was not sent.", state);
   }
   if (!state.identity.matches) {
-    return refuse(`Signed in as @${state.identity.handle}, expected @${request.publisherHandle}.`, state);
+    return refuse(`Signed in as @${state.identity.handle}, expected @${request.publisherHandle}.`, state, true);
   }
   // A reply with this exact text already under this post is this reply. Sending
   // it again would double-post, so the existing one is adopted instead.
@@ -217,7 +223,7 @@ export async function publishReply(
   }
   if (!state.identity.session || !state.identity.matches) {
     await browser.press("Escape").catch(() => undefined);
-    return refuse("The signed-in account changed while the reply was being typed.", state);
+    return refuse("The signed-in account changed while the reply was being typed.", state, true);
   }
   if (normalize(state.composer.text) !== normalize(request.replyText)) {
     await browser.press("Escape").catch(() => undefined);

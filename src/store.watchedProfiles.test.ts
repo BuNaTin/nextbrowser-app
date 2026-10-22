@@ -19,6 +19,9 @@ vi.mock("./lib/analytics", () => ({
   trackTiming: vi.fn(),
 }));
 
+const reporting = vi.hoisted(() => ({ reportUserFacingError: vi.fn(), reportUserFacingMessage: vi.fn() }));
+vi.mock("./lib/errorReporting", () => reporting);
+
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
   return {
@@ -59,6 +62,7 @@ beforeEach(() => {
   bridge.invoke.mockReset();
   bridge.listen.mockReset();
   bridge.invoke.mockResolvedValue(null);
+  reporting.reportUserFacingError.mockClear();
 });
 
 describe("watched profiles", () => {
@@ -310,6 +314,33 @@ describe("watchlist loop", () => {
     await useStore.getState().startWatchlistRun(watchlistSkill, 5);
     expect(runWatchlistPass).not.toHaveBeenCalled();
     expect(useStore.getState().watchlistRunFor("repository:x-reply-agent")?.enabled).toBe(true);
+  });
+
+  it("reports a due pass that has waited 15 minutes for its agent, once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const useStore = await loadStoreWithSkill();
+      const runWatchlistPass = vi.fn().mockResolvedValue(undefined);
+      useStore.setState({ runWatchlistPass, agentReady: () => false });
+      useStore.getState().addWatchedProfile("repository:x-reply-agent", "alpha");
+      await useStore.getState().startWatchlistRun(watchlistSkill, 5);
+      useStore.setState((state) => ({ watchlistRuns: state.watchlistRuns.map((item) => ({ ...item, nextRunAt: Date.now() - 1 })) }));
+
+      // The panel says "Next check any moment" all along.
+      await useStore.getState().tickWatchlistRuns();
+      vi.setSystemTime(Date.now() + 14 * 60_000);
+      await useStore.getState().tickWatchlistRuns();
+      expect(reporting.reportUserFacingError).not.toHaveBeenCalled();
+
+      vi.setSystemTime(Date.now() + 60_000);
+      await useStore.getState().tickWatchlistRuns();
+      await useStore.getState().tickWatchlistRuns();
+      expect(reporting.reportUserFacingError).toHaveBeenCalledOnce();
+      expect(reporting.reportUserFacingError).toHaveBeenCalledWith({ surface: "watchlist-schedule", code: "WATCHLIST_AGENT_NOT_READY" });
+      expect(runWatchlistPass).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

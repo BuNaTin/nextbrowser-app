@@ -2,30 +2,70 @@ import { describe, expect, it } from "vitest";
 import {
   actionFailureMessage,
   agentFailureDetail,
+  errorCodeForRef,
   errorReference,
+  errorRefsIn,
+  incidentReference,
   internalError,
   needsSupportLink,
 } from "./userFacingError";
 
+/** The message with each Ref cut back to the part that names the error code. */
+function withCodeRef(message: string): string {
+  return message.replace(/(Ref: NB-[A-F0-9]{8})-[A-F0-9]{4}\b/g, "$1");
+}
+
 describe("user-facing internal errors", () => {
   it("never exposes technical error details", () => {
-    expect(internalError("We couldn't start Live View.", "LIVE_VIEW_CONNECT_FAILED")).toBe(
+    expect(withCodeRef(internalError("We couldn't start Live View.", "LIVE_VIEW_CONNECT_FAILED"))).toBe(
       `We couldn't start Live View. Ref: ${errorReference("LIVE_VIEW_CONNECT_FAILED")}`,
     );
   });
 
   it("does not render untrusted error codes", () => {
-    expect(internalError("Failed.", "bad code")).toBe(`Failed. Ref: ${errorReference("INTERNAL_ERROR")}`);
+    expect(withCodeRef(internalError("Failed.", "bad code"))).toBe(`Failed. Ref: ${errorReference("INTERNAL_ERROR")}`);
+  });
+
+  it("gives every incident its own Ref that still names the error code", () => {
+    const first = errorRefsIn(internalError("We couldn't start the agent.", "AGENT_START_FAILED"));
+    const second = errorRefsIn(actionFailureMessage("We couldn't start the agent.", "AGENT_START_FAILED", "spawn failed"));
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(first[0]).toMatch(new RegExp(`^${errorReference("AGENT_START_FAILED")}-[0-9A-F]{4}$`));
+    expect(second[0]).toMatch(new RegExp(`^${errorReference("AGENT_START_FAILED")}-[0-9A-F]{4}$`));
+    const many = new Set(Array.from({ length: 20 }, () => incidentReference("AGENT_START_FAILED")));
+    expect(many.size).toBeGreaterThan(1);
+  });
+
+  it("remembers which error code each Ref it made stands for", () => {
+    const [ref] = errorRefsIn(internalError("We couldn't sign you out.", "ACCOUNT_SIGN_OUT_FAILED"));
+    const [failedRef] = errorRefsIn(actionFailureMessage("We couldn't start “Work”.", "PROFILE_START_FAILED", "Proxy check failed"));
+    const [untrustedRef] = errorRefsIn(internalError("Failed.", "bad code"));
+    expect(errorCodeForRef(ref)).toBe("ACCOUNT_SIGN_OUT_FAILED");
+    expect(errorCodeForRef(failedRef)).toBe("PROFILE_START_FAILED");
+    expect(errorCodeForRef(untrustedRef)).toBe("INTERNAL_ERROR");
+    // A Ref from another source (a reload, the main process) is not ours.
+    expect(errorCodeForRef("NB-25647DEA-0000")).toBeUndefined();
+    expect(errorCodeForRef(errorReference("ACCOUNT_SIGN_OUT_FAILED"))).toBeUndefined();
+  });
+
+  it("finds every Ref in a message, old and new formats alike", () => {
+    expect(errorRefsIn("The Work profile couldn't start: proxy. Retry once. Ref: NB-0000ABCD")).toEqual(["NB-0000ABCD"]);
+    expect(errorRefsIn("We couldn't start “Work”. Ref: NB-0000ABCD Ref: NB-25647DEA-1A2B")).toEqual(["NB-0000ABCD", "NB-25647DEA-1A2B"]);
+    expect(errorRefsIn("NB-25647DEA-1A2B without the label")).toEqual([]);
   });
 
   it("adds support only to internal errors", () => {
     expect(needsSupportLink(internalError("Failed.", "ACTION_FAILED"))).toBe(true);
+    // Refs written before Refs had an incident part, and by the main process.
+    expect(needsSupportLink("We couldn't sign you out. Ref: NB-25647DEA")).toBe(true);
+    expect(needsSupportLink("We couldn't sign you out. Ref: NB-25647DEA-1A2B")).toBe(true);
     expect(needsSupportLink("Enter a valid proxy URL.")).toBe(false);
   });
 
   it("explains the sanitized reason beside the support reference", () => {
     const message = actionFailureMessage("We couldn't prepare this profile.", "PROFILE_ASSIGNMENT_FAILED", "workspace revision conflict");
-    expect(message).toBe(
+    expect(withCodeRef(message)).toBe(
       "We couldn't prepare this profile. The selected workspace is no longer available. Select or create a workspace, then try again. "
       + `Ref: ${errorReference("PROFILE_ASSIGNMENT_FAILED")}`,
     );
@@ -54,8 +94,8 @@ describe("user-facing internal errors", () => {
   });
 
   it("falls back to the bare reference when no reason is available", () => {
-    expect(actionFailureMessage("Failed.", "ACTION_FAILED")).toBe(`Failed. Ref: ${errorReference("ACTION_FAILED")}`);
-    expect(actionFailureMessage("Failed.", "ACTION_FAILED", "   ")).toBe(`Failed. Ref: ${errorReference("ACTION_FAILED")}`);
+    expect(withCodeRef(actionFailureMessage("Failed.", "ACTION_FAILED"))).toBe(`Failed. Ref: ${errorReference("ACTION_FAILED")}`);
+    expect(withCodeRef(actionFailureMessage("Failed.", "ACTION_FAILED", "   "))).toBe(`Failed. Ref: ${errorReference("ACTION_FAILED")}`);
   });
 });
 
@@ -75,7 +115,7 @@ describe("agent failure detail", () => {
 
   it("keeps the reference after the reason", () => {
     const message = internalError(`Codex stopped unexpectedly. ${agentFailureDetail("ERROR: stream disconnected")}`, "AGENT_STOPPED_UNEXPECTEDLY");
-    expect(message).toBe(`Codex stopped unexpectedly. Stream disconnected. Ref: ${errorReference("AGENT_STOPPED_UNEXPECTEDLY")}`);
+    expect(withCodeRef(message)).toBe(`Codex stopped unexpectedly. Stream disconnected. Ref: ${errorReference("AGENT_STOPPED_UNEXPECTEDLY")}`);
     expect(needsSupportLink(message)).toBe(true);
   });
 });

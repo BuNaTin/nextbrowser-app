@@ -95,7 +95,8 @@ import { trafficGateState } from "./lib/trafficGate";
 import { activeAutomationRecording, clearActiveAutomationRecording } from "./lib/automationRecording";
 import { clearActiveAutomationExecution } from "./lib/automationExecution";
 import { setAnalyticsUserId, trackEvent, trackScreenView, trackTiming } from "./lib/analytics";
-import { actionFailureMessage, agentFailureDetail, errorReference, internalError } from "./lib/userFacingError";
+import { reportUserFacingError, reportUserFacingMessage } from "./lib/errorReporting";
+import { actionFailureMessage, agentFailureDetail, errorRefsIn, internalError } from "./lib/userFacingError";
 import { agentEmptyReplyMessage } from "./lib/agentRunResult";
 import { isBrowserVerificationFailure, userFacingBrowserError } from "./lib/userFacingBrowserError";
 import {
@@ -136,8 +137,10 @@ import {
 import { DAILY_WEEKDAYS, scheduleDue } from "./lib/scheduleDue";
 import {
   SCHEDULE_START_RETRY_MS,
+  ScheduledStartError,
   scheduledAgentCheck,
   scheduledInventoryCheck,
+  scheduledStartFailureCode,
   settleScheduledWait,
   type ScheduledStartCheck,
 } from "./lib/scheduleStart";
@@ -326,6 +329,9 @@ const WATCHDOG_MS = 5_000;
 const PROXY_REFRESH_MS = 120_000;
 const PROFILE_STATUS_REFRESH_MS = 15_000;
 const SCHEDULE_TICK_MS = 30_000;
+// A due watch pass that has waited this long for its agent is a stall worth
+// reporting; a few seconds while the app connects the agent are not.
+const WATCHLIST_STALL_REPORT_MS = 15 * 60_000;
 const PROFILE_CREATE_REQUEST_POLL_MS = 10_000;
 const NEXTCTL_DAILY_UPDATE_MS = 20 * 60 * 1000;
 const NEXTCTL_DAILY_UPDATE_POLL_MS = 60 * 1000;
@@ -673,7 +679,11 @@ interface State {
   watchlistSignIns: Record<string, WatchedPublisher>;
   /** Skill id currently doing browser work from its panel, if any. */
   watchlistBusy?: string;
+  /** The panel's step line: progress while busy, then a failure until the
+   *  next Open or Check. */
   watchlistStep?: string;
+  /** The skill id the step line belongs to. */
+  watchlistStepFor?: string;
   xReplyState: XReplyState;
   xReplyBusy: boolean;
   xReplyStep?: string;
@@ -830,7 +840,9 @@ interface State {
   clearChat: () => void;
   enqueue: (text: string, chip?: UserCommandChip, into?: string, attachments?: ChatAttachment[], agentPrompt?: string) => string | undefined;
   stopRunning: () => void;
-  stopReply: (replyId: string) => void;
+  /** `reason: "timeout"` marks a stop the app made because the reply ran too
+   *  long, which the main process reports; a user's Stop is not reported. */
+  stopReply: (replyId: string, options?: { reason?: "timeout" }) => void;
   cancelQueuedReply: (replyId: string) => boolean;
   editQueuedReply: (replyId: string, newText: string) => boolean;
   canManageQueuedReply: (replyId: string) => boolean;
@@ -953,6 +965,7 @@ function forgetScheduledStart(id: string) {
 }
 let localNextctlOperations = 0;
 let defaultSetupInFlight = false;
+let watchlistStall: { code: string; since: number; reported: boolean } | undefined;
 
 // One default profile per browser toolset for a brand-new account.
 const DEFAULT_WORKSPACE_TOOLSETS: { runtime: BrowserToolset; name: string }[] = [
@@ -1693,14 +1706,29 @@ function proxyTunnelLost(message: string): boolean {
   return /ERR_TUNNEL_CONNECTION_FAILED/i.test(message);
 }
 
+function accountUnauthorized(message: string): boolean {
+  return /API_KEY|not authorized|unauthorized/i.test(message);
+}
+
 /** friendlyXReplyError keeps a CDP transcript out of the panel. */
 function friendlyXReplyError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (sessionLost(message)) return "The browser session was lost. Press Start again to reopen it.";
-  if (/API_KEY|not authorized|unauthorized/i.test(message)) return "Nextbrowser could not authenticate. Reconnect your account.";
+  if (accountUnauthorized(message)) return "Nextbrowser could not authenticate. Reconnect your account.";
   // The Ref makes the panel offer the Discord link, as other internal errors do.
   if (isBrowserVerificationFailure(message)) return internalError(userFacingBrowserError(message), "VERIFY_FAILED");
   return message.replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+/**
+ * Reports a watch or monitoring pass that failed before it could run. The
+ * user finds it only as a note; `shown` is that note, whose Ref, if any, is
+ * the incident. A signed-out account is the user's to fix and is not
+ * reported.
+ */
+function reportPassFailure(surface: string, code: string, error: unknown, shown: string): void {
+  if (accountUnauthorized(error instanceof Error ? error.message : String(error))) return;
+  reportUserFacingMessage(surface, shown, code);
 }
 
 // Nothing writes this file per keystroke any more, and a deferred write is a
@@ -1757,6 +1785,16 @@ let xReplyDraftReplyId: string | undefined;
 function watchlistSignInFor(state: State, entry: SkillEntry) {
   const transport = state.watchlistTransportFor(entry);
   return transport.signIn ?? entry.watchlist?.signIn;
+}
+
+const PICK_CLOUD_PHONE_FIRST = "Pick a cloud phone first";
+
+/** Shows the cloud-phone hint on a skill's step line for a few seconds. */
+function hintPickCloudPhone(entry: SkillEntry): void {
+  useStore.setState({ watchlistStep: PICK_CLOUD_PHONE_FIRST, watchlistStepFor: entry.id });
+  setTimeout(() => {
+    if (useStore.getState().watchlistStep === PICK_CLOUD_PHONE_FIRST) useStore.setState({ watchlistStep: undefined });
+  }, 4000);
 }
 
 /** watchlistBrowser binds the CLI to the profile this skill was given, so a
@@ -1849,7 +1887,8 @@ async function runDraftAgent(options: {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    void invoke("agent_terminate", { replyId }).catch(() => undefined);
+    // Not the user's Stop: the main process reports it as a timeout.
+    void invoke("agent_terminate", { replyId, reason: "timeout" }).catch(() => undefined);
   }, X_REPLY_DRAFT_TIMEOUT_MS);
   try {
     const result = await invoke<AgentDone>("agent_run", {
@@ -2437,10 +2476,12 @@ export const useStore = create<State>((set, get) => {
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<void>((resolve) => {
       startupTimer = setTimeout(() => {
-        set({ checking: false, startupError: get().startupPhase === "local"
+        const phase = get().startupPhase;
+        set({ checking: false, startupError: phase === "local"
           ? "Loading saved projects is taking longer than expected. You can restart the check."
           : "Account verification is taking longer than expected. You can restart the check." });
-        trackEvent("bootstrap_foreground_timeout", { phase: get().startupPhase });
+        trackEvent("bootstrap_foreground_timeout", { phase });
+        reportUserFacingError({ surface: "startup", code: phase === "local" ? "STARTUP_LOCAL_TIMED_OUT" : "STARTUP_ACCOUNT_TIMED_OUT" });
         resolve();
       }, BOOTSTRAP_FOREGROUND_WAIT_MS);
     });
@@ -2682,6 +2723,7 @@ export const useStore = create<State>((set, get) => {
     })().catch(() => {
       set({ checking: false, startupError: "Nextbrowser couldn't finish startup. Restart the check to try again." });
       trackTiming("bootstrap_failed", startedAt, { phase: get().startupPhase });
+      reportUserFacingError({ surface: "startup", code: get().startupPhase === "local" ? "STARTUP_LOCAL_FAILED" : "STARTUP_ACCOUNT_FAILED" });
     }).finally(() => {
       if (startupTimer) clearTimeout(startupTimer);
     });
@@ -2832,7 +2874,7 @@ export const useStore = create<State>((set, get) => {
       // period throws, so the reason is recorded on the schedule.
       const passes = (check: ScheduledStartCheck): boolean => {
         const settled = settleScheduledWait(check, waitingSince, now());
-        if (settled.status === "failed") throw new Error(settled.error);
+        if (settled.status === "failed") throw new ScheduledStartError(settled.error, settled.code);
         return settled.status === "ready";
       };
       scheduledStartsInFlight.add(run.id);
@@ -2842,13 +2884,17 @@ export const useStore = create<State>((set, get) => {
         if (!passes(scheduledInventoryCheck(scheduledTarget, profileInventoryEpoch === accountEpoch))) continue;
         const workspaceId = run.workspaceId ?? scheduledConversation?.workspaceId;
         const scheduledWorkspace = workspaceId ? get().workspaces.find((workspace) => workspace.id === workspaceId) : undefined;
-        if (workspaceId && !scheduledWorkspace) throw new Error("The scheduled workspace no longer exists.");
+        if (workspaceId && !scheduledWorkspace) throw new ScheduledStartError("The scheduled workspace no longer exists.");
         // A VPS profile need not exist in this machine's nextctl inventory.
         const scheduledProfiles = scheduledTarget === "vps"
           ? scheduledWorkspace?.profileNames ?? []
           : availableWorkspaceProfiles(scheduledWorkspace?.profileNames ?? [], get().profiles);
         const scheduledProfile = resolveScheduledProfile(run, scheduledProfiles);
-        if (scheduledTarget === "vps") await waitForLocalNextctlIdle(get);
+        if (scheduledTarget === "vps") {
+          await waitForLocalNextctlIdle(get).catch((error: unknown) => {
+            throw new ScheduledStartError(error instanceof Error ? error.message : String(error), "SCHEDULED_LOCAL_NEXTCTL_BUSY");
+          });
+        }
         // Connect the run's own agent in the background. Switching the
         // selected agent, workspace or chat here changed what the user was
         // looking at and what the app reopened after a restart.
@@ -2868,7 +2914,7 @@ export const useStore = create<State>((set, get) => {
         let cid = run.conversationId;
         if (!cid || !get().conversations.some((c) => c.id === cid && c.agent === run.agent)) {
           const chatWorkspaceId = workspaceId ?? get().activeWorkspaceId;
-          if (chatWorkspaceId && deletingWorkspaceIds.has(chatWorkspaceId)) throw new Error("This workspace is being deleted.");
+          if (chatWorkspaceId && deletingWorkspaceIds.has(chatWorkspaceId)) throw new ScheduledStartError("This workspace is being deleted.");
           // Added to the list but not opened: the user's current chat, and the
           // chat the app reopens after a restart, stay what they were.
           const chat: Conversation = {
@@ -2908,7 +2954,7 @@ export const useStore = create<State>((set, get) => {
           });
         }
         const replyId = enqueueWithTarget(run.prompt, undefined, cid, [], scheduledTarget, undefined, { name: scheduledProfile });
-        if (!replyId) throw new Error(`${agentName} did not accept the scheduled prompt.`);
+        if (!replyId) throw new ScheduledStartError(`${agentName} did not accept the scheduled prompt.`, "SCHEDULED_PROMPT_NOT_ACCEPTED");
         forgetScheduledStart(run.id);
         const firedRuns = get().scheduledRuns.map((r) =>
           r.id === run.id ? { ...r, lastFiredAt: now(), lastError: undefined } : r,
@@ -2932,6 +2978,10 @@ export const useStore = create<State>((set, get) => {
           set({ scheduledRuns: failedRuns });
           persistSchedules(failedRuns);
           trackEvent("scheduled_run_start_failed", { agent: run.agent, execution_target: scheduledTarget });
+          // The reason shows only on the schedule, which nobody may open for
+          // days. A Ref in it (a failed agent connection) is the incident.
+          const code = scheduledStartFailureCode(error);
+          if (code) reportUserFacingMessage("scheduled-run-start", message, code);
         }
       } finally {
         scheduledStartsInFlight.delete(run.id);
@@ -3271,13 +3321,10 @@ export const useStore = create<State>((set, get) => {
       await finishAgentRun(item.replyId, result);
     } catch (error) {
       // The reply shows only the reference; keep the cause for support.
-      console.error(`[AGENT_START_FAILED] ${errorReference("AGENT_START_FAILED")} ${agentId} ${runStage}`, error);
+      const failure = internalError("We couldn't start the agent.", "AGENT_START_FAILED");
+      console.error(`[AGENT_START_FAILED] ${errorRefsIn(failure).pop()} ${agentId} ${runStage}`, error);
       replyExecutionTargets.delete(item.replyId);
-      get().appendToMessage(
-        item.conversationId,
-        item.replyId,
-        `\n${internalError("We couldn't start the agent.", "AGENT_START_FAILED")}`,
-      );
+      get().appendToMessage(item.conversationId, item.replyId, `\n${failure}`);
       get().setMessageStatus(item.conversationId, item.replyId, "failed");
       trackEvent("agent_turn_spawn_failed", { agent: agentId, stage: runStage });
       set((s) => ({
@@ -5678,10 +5725,15 @@ export const useStore = create<State>((set, get) => {
         profiles_created: created.length,
         profiles_failed: failed,
       });
+      // The user lands on the manual setup, or misses a default profile,
+      // without a word about why.
+      if (stillRequired) reportUserFacingError({ surface: "workspace-setup", code: "WORKSPACE_AUTO_SETUP_FAILED" });
+      else if (failed) reportUserFacingError({ surface: "workspace-setup", code: "DEFAULT_PROFILES_PARTLY_FAILED" });
     } catch (error) {
       console.error("[AUTO_SETUP_FAILED]", error);
       set({ workspaceSetupAuto: "failed" });
       trackTiming("workspace_auto_setup_failed", startedAt, { reason: "error" });
+      reportUserFacingError({ surface: "workspace-setup", code: "WORKSPACE_AUTO_SETUP_FAILED" });
     } finally {
       defaultSetupInFlight = false;
     }
@@ -5697,11 +5749,14 @@ export const useStore = create<State>((set, get) => {
       // Read this computer's profiles first, so a toolset that already has a
       // profile here is skipped and no taken name is reused.
       await get().loadProfiles();
-      const { created, failure } = await createDefaultWorkspaceProfiles(workspaceId);
+      const { created, failed, failure } = await createDefaultWorkspaceProfiles(workspaceId);
       await get().loadProfiles();
       trackEvent("default_profiles_created", { count: created.length });
       if (!created.length && failure) {
         set({ defaultProfilesError: actionFailureMessage("We couldn't create the profiles.", "DEFAULT_PROFILES_FAILED", failure) });
+      } else if (failed) {
+        // Some defaults are missing and nothing says so.
+        reportUserFacingError({ surface: "default-profiles", code: "DEFAULT_PROFILES_PARTLY_FAILED" });
       }
     } finally {
       defaultSetupInFlight = false;
@@ -6102,7 +6157,7 @@ export const useStore = create<State>((set, get) => {
     get().stopReply(replyId);
   },
 
-  stopReply: (replyId) => {
+  stopReply: (replyId, options) => {
     const agentId = Object.entries(get().runtime).find(([, runtime]) => runtime.runningReplyId === replyId)?.[0];
     if (!agentId) return;
     trackEvent("agent_turn_stop_requested", { agent: agentId });
@@ -6123,7 +6178,7 @@ export const useStore = create<State>((set, get) => {
       : [];
     const baseline = replyProfileBaselines.get(replyId) ?? new Set<string>();
     const workspaceProfiles = get().workspaces.find((workspace) => workspace.id === conversation?.workspaceId)?.profileNames ?? [];
-    void invoke("agent_terminate", { replyId }).finally(() => {
+    void invoke("agent_terminate", { replyId, ...(options?.reason ? { reason: options.reason } : {}) }).finally(() => {
       void get().loadProfiles().catch(() => undefined).finally(() => {
         const newlyStarted = workspaceProfiles.filter((profile) => get().statuses[profile] === "running" && !baseline.has(profile));
         const targets = [...new Set([...ownedProfiles, ...newlyStarted])];
@@ -6685,6 +6740,7 @@ export const useStore = create<State>((set, get) => {
       persistXReplyState(state);
       set({ xReplyState: state });
       trackEvent("x_reply_pass_failed", {});
+      reportPassFailure("x-reply-pass", "X_REPLY_SESSION_FAILED", error, state.lastPassSummary ?? "");
     } finally {
       set({ xReplyBusy: false, xReplyStep: undefined });
     }
@@ -6923,6 +6979,8 @@ export const useStore = create<State>((set, get) => {
       }, at);
       void saveJson(X_MONITOR_STATE_FILE, result.state);
       void saveJson(X_MONITOR_FEED_FILE, xMonitorFeed);
+      // A page the reader could not make sense of: a site change, or a refusal.
+      if (result.summary.blocked) reportUserFacingError({ surface: "x-monitor-pass", code: "X_MONITOR_PASS_BLOCKED" });
       // Monitoring keeps its own record of the account; the reply agent's state
       // is the reply agent's alone.
       set({ xMonitorState: result.state, xMonitorFeed });
@@ -6934,13 +6992,15 @@ export const useStore = create<State>((set, get) => {
     } catch (error) {
       xMonitorLog({ t: new Date().toISOString(), ev: "run.error", error: xReplyErrorText(error) });
       const at = now();
+      const shown = friendlyXReplyError(error);
       const xMonitorState: MonitorState = {
         ...get().xMonitorState,
-        lastPass: { at, finishedAt: at, newPosts: 0, followerChanges: 0, notes: [friendlyXReplyError(error)] },
+        lastPass: { at, finishedAt: at, newPosts: 0, followerChanges: 0, notes: [shown] },
       };
       void saveJson(X_MONITOR_STATE_FILE, xMonitorState);
       set({ xMonitorState });
       trackEvent("x_monitor_pass_failed", {});
+      reportPassFailure("x-monitor-pass", "X_MONITOR_PASS_FAILED", error, shown);
     } finally {
       xMonitorPassActive = false;
       set({ xReplyBusy: false, xReplyStep: undefined });
@@ -6978,6 +7038,9 @@ export const useStore = create<State>((set, get) => {
       void saveJson(REDDIT_MONITOR_STATE_FILE, redditMonitorState);
       void saveJson(REDDIT_MONITOR_FEED_FILE, redditMonitorFeed);
       set({ redditMonitorState, redditMonitorFeed });
+      if (result.summary.blocked && !result.summary.rateLimited) {
+        reportUserFacingError({ surface: "reddit-monitor-pass", code: "REDDIT_MONITOR_PASS_BLOCKED" });
+      }
       trackEvent("reddit_monitor_pass_finished", {
         new_items: result.summary.newItems,
         urgent: result.summary.urgent,
@@ -6988,13 +7051,15 @@ export const useStore = create<State>((set, get) => {
     } catch (error) {
       redditMonitorLog({ t: new Date().toISOString(), ev: "run.error", error: xReplyErrorText(error) });
       const at = now();
+      const shown = friendlyXReplyError(error);
       const redditMonitorState: RedditMonitorState = {
         ...get().redditMonitorState,
-        lastPass: { at, finishedAt: at, newItems: 0, urgent: 0, countChanges: 0, notes: [friendlyXReplyError(error)] },
+        lastPass: { at, finishedAt: at, newItems: 0, urgent: 0, countChanges: 0, notes: [shown] },
       };
       void saveJson(REDDIT_MONITOR_STATE_FILE, redditMonitorState);
       set({ redditMonitorState });
       trackEvent("reddit_monitor_pass_failed", {});
+      reportPassFailure("reddit-monitor-pass", "REDDIT_MONITOR_PASS_FAILED", error, shown);
     } finally {
       redditMonitorPassActive = false;
       set({ redditMonitorBusy: false, redditMonitorStep: undefined });
@@ -7057,6 +7122,9 @@ export const useStore = create<State>((set, get) => {
       void saveJson(social.files.state, state);
       void saveJson(social.files.feed, feed);
       setSlot({ state, feed });
+      if (result.summary.blocked && !result.summary.rateLimited && !result.summary.securityCheck) {
+        reportUserFacingError({ surface: `${engine}-pass`, code: `${engine.replace(/-/g, "_").toUpperCase()}_PASS_BLOCKED` });
+      }
       trackEvent(`${engine.replace(/-/g, "_")}_pass_finished`, {
         new_items: result.summary.newItems,
         urgent: result.summary.urgent,
@@ -7068,10 +7136,12 @@ export const useStore = create<State>((set, get) => {
     } catch (error) {
       log({ t: new Date().toISOString(), ev: "run.error", error: xReplyErrorText(error) });
       const at = now();
-      const state: SocialState = { ...slot()!.state, lastPass: { at, finishedAt: at, notes: [friendlyXReplyError(error)] } };
+      const shown = friendlyXReplyError(error);
+      const state: SocialState = { ...slot()!.state, lastPass: { at, finishedAt: at, notes: [shown] } };
       void saveJson(social.files.state, state);
       setSlot({ state });
       trackEvent(`${engine.replace(/-/g, "_")}_pass_failed`, {});
+      reportPassFailure(`${engine}-pass`, `${engine.replace(/-/g, "_").toUpperCase()}_PASS_FAILED`, error, shown);
     } finally {
       stop.active = false;
       setSlot({ busy: false, step: undefined });
@@ -7201,31 +7271,31 @@ export const useStore = create<State>((set, get) => {
       // A phone has no page to open: the way in is the screen itself, so this
       // starts Live View and the user signs in on the phone with their hands.
       if (!device) {
-        set({ watchlistStep: "Pick a cloud phone first" });
-        setTimeout(() => set({ watchlistStep: undefined }), 4000);
+        hintPickCloudPhone(entry);
         return;
       }
-      set({ watchlistBusy: entry.id, watchlistStep: `Opening ${device.name}` });
+      set({ watchlistBusy: entry.id, watchlistStep: `Opening ${device.name}`, watchlistStepFor: entry.id });
       try {
         await get().startRemoteStream({ runtime: "multilogin", selection: device });
+        set({ watchlistStep: undefined });
       } catch (error) {
+        // The failure stays on the panel until the next Open or Check.
         set({ watchlistStep: friendlyXReplyError(error) });
       } finally {
         set({ watchlistBusy: undefined });
-        setTimeout(() => set({ watchlistStep: undefined }), 4000);
       }
       return;
     }
-    set({ watchlistBusy: entry.id, watchlistStep: `Opening ${selectorTargetHost(entry.selector) || signIn.url}` });
+    set({ watchlistBusy: entry.id, watchlistStep: `Opening ${selectorTargetHost(entry.selector) || signIn.url}`, watchlistStepFor: entry.id });
     try {
       const browser = await watchlistBrowser(entry, (step) => set({ watchlistStep: step }));
       await browser.open(signIn.url);
+      set({ watchlistStep: undefined });
     } catch (error) {
       set({ watchlistStep: friendlyXReplyError(error) });
       return;
     } finally {
       set({ watchlistBusy: undefined });
-      setTimeout(() => set({ watchlistStep: undefined }), 4000);
     }
     await get().checkWatchlistSignIn(entry);
   },
@@ -7239,11 +7309,10 @@ export const useStore = create<State>((set, get) => {
     if (get().watchlistBusy) return get().watchlistSignIns[entry.id]?.signedIn === true;
     const device = get().watchlistDevices[entry.id];
     if (signInIsForDevice(signIn) && !device) {
-      set({ watchlistStep: "Pick a cloud phone first" });
-      setTimeout(() => set({ watchlistStep: undefined }), 4000);
+      hintPickCloudPhone(entry);
       return false;
     }
-    set({ watchlistBusy: entry.id, watchlistStep: "Checking the signed-in account" });
+    set({ watchlistBusy: entry.id, watchlistStep: "Checking the signed-in account", watchlistStepFor: entry.id });
     try {
       let probed: { signed_in?: boolean; handle?: string };
       if (signInIsForDevice(signIn)) {
@@ -7264,15 +7333,15 @@ export const useStore = create<State>((set, get) => {
         signedIn: probed?.signed_in === true,
         checkedAt: now(),
       };
-      set({ watchlistSignIns: { ...get().watchlistSignIns, [entry.id]: publisher } });
+      set({ watchlistSignIns: { ...get().watchlistSignIns, [entry.id]: publisher }, watchlistStep: undefined });
       trackEvent("watchlist_sign_in_checked", { skill: entry.id, signed_in: publisher.signedIn === true });
       return publisher.signedIn === true;
     } catch (error) {
+      // The failure stays on the panel until the next Open or Check.
       set({ watchlistStep: friendlyXReplyError(error) });
       return false;
     } finally {
       set({ watchlistBusy: undefined });
-      setTimeout(() => set({ watchlistStep: undefined }), 4000);
     }
   },
 
@@ -7344,11 +7413,21 @@ export const useStore = create<State>((set, get) => {
 
   tickWatchlistRuns: async () => {
     const due = get().watchlistRuns.filter((run) => run.enabled && (run.nextRunAt ?? 0) <= now());
-    if (!due.length) return;
     // A pass drives the local browser profile, so it never runs against a
     // conversation pinned to a VPS and never overlaps VPS setup.
-    if (pendingTarget(get(), "vps")) return;
-    if (!get().agentReady()) return;
+    const stall = !due.length ? undefined
+      : pendingTarget(get(), "vps") ? "WATCHLIST_WAITING_FOR_VPS_WORK"
+        : !get().agentReady() ? "WATCHLIST_AGENT_NOT_READY"
+          : undefined;
+    // Meanwhile the panel says the next check is due any moment, so a stall
+    // that lasts is reported, once.
+    if (!stall) watchlistStall = undefined;
+    else if (watchlistStall?.code !== stall) watchlistStall = { code: stall, since: now(), reported: false };
+    else if (!watchlistStall.reported && now() - watchlistStall.since >= WATCHLIST_STALL_REPORT_MS) {
+      watchlistStall.reported = true;
+      reportUserFacingError({ surface: "watchlist-schedule", code: stall });
+    }
+    if (!due.length || stall) return;
 
     for (const run of due) {
       const entry = get().skillCategories

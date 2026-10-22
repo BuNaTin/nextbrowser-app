@@ -4,6 +4,7 @@ import { internalError } from "../lib/userFacingError";
 import { useStore } from "../store";
 import { CountrySelect } from "./CountrySelect";
 import { Icon, Spinner } from "./Icon";
+import { UserFacingError } from "./UserFacingError";
 import { entityNameLimits, validateEntityName } from "../lib/entityValidation";
 
 export function WorkspaceSetupGate() {
@@ -99,7 +100,7 @@ export function WorkspaceSetupGate() {
             <label className={"project-mode-option" + (toolset === "camoufox" ? " is-selected" : "")}><input type="radio" checked={toolset === "camoufox"} onChange={() => setToolset("camoufox")} /><Icon name="shield" size={16} /><span><strong>Camoufox</strong><small>Firefox anti-detect browser</small></span></label>
           </fieldset>
         </>}
-        {error && <div className="error small">{error}</div>}
+        {error && <div className="error small"><UserFacingError message={error} surface="workspace_setup" /></div>}
         <button className="primary workspace-setup-submit" disabled={saving || (step === 1 ? !workspaceName.trim() : step === 2 ? !chatName.trim() : !profileName.trim())}>
           {saving ? <Spinner size={13} /> : <Icon name="arrow.right" size={13} />}
           {step === 3 ? "Finish setup" : "Continue"}

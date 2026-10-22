@@ -1,7 +1,13 @@
 import { userFacingBrowserError } from "./userFacingBrowserError";
 
 const errorCodePattern = /^[A-Z][A-Z0-9_]{2,63}$/;
+// "Ref: NB-<hash>-<incident>". The main process words a failed profile start
+// with "Ref: NB-<random>" (electron/profile-start-failure.cjs).
+const refPattern = /\bRef: (NB-[A-F0-9]{8}(?:-[A-F0-9]{4})?)\b/g;
+const MAX_REMEMBERED_REFS = 200;
+const refCodes = new Map<string, string>();
 
+/** The stable part of a Ref: a hash of what failed (an error code or message). */
 export function errorReference(value: string): string {
   let hash = 2166136261;
   for (const char of value || "INTERNAL_ERROR") {
@@ -11,10 +17,47 @@ export function errorReference(value: string): string {
   return `NB-${(hash >>> 0).toString(16).toUpperCase().padStart(8, "0")}`;
 }
 
+function incidentPart(): string {
+  const bytes = new Uint8Array(2);
+  try {
+    globalThis.crypto.getRandomValues(bytes);
+  } catch {
+    bytes[0] = Math.floor(Math.random() * 256);
+    bytes[1] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (byte) => byte.toString(16).toUpperCase().padStart(2, "0")).join("");
+}
+
+/**
+ * The Ref of one occurrence of a failure: the hash of what failed, which
+ * support maps back to the error code, then a random part that finds this
+ * very incident among the error reports.
+ */
+export function incidentReference(value: string): string {
+  return `${errorReference(value)}-${incidentPart()}`;
+}
+
+function codeReference(code: string): string {
+  const ref = incidentReference(code);
+  refCodes.set(ref, code);
+  if (refCodes.size > MAX_REMEMBERED_REFS) refCodes.delete(refCodes.keys().next().value as string);
+  return ref;
+}
+
+/** The error code behind a Ref this window made, so a component that has only the text can report it. */
+export function errorCodeForRef(ref: string): string | undefined {
+  return refCodes.get(ref);
+}
+
+/** Every Ref a message carries, in the order they appear. */
+export function errorRefsIn(message: string): string[] {
+  return Array.from(String(message || "").matchAll(refPattern), (match) => match[1]);
+}
+
 export function internalError(action: string, code: string): string {
   const context = action.trim() || "The action failed.";
   const safeCode = errorCodePattern.test(code) ? code : "INTERNAL_ERROR";
-  return `${context} Ref: ${errorReference(safeCode)}`;
+  return `${context} Ref: ${codeReference(safeCode)}`;
 }
 
 /**
@@ -26,7 +69,7 @@ export function isBackgroundSyncFailure(detail: string): boolean {
 }
 
 export function needsSupportLink(message: string): boolean {
-  return /\bRef: NB-[A-F0-9]{8}\b/.test(message);
+  return errorRefsIn(message).length > 0;
 }
 
 /**
@@ -54,5 +97,5 @@ export function actionFailureMessage(action: string, code: string, detail?: unkn
   const context = action.trim() || "The action failed.";
   const safeCode = errorCodePattern.test(code) ? code : "INTERNAL_ERROR";
   const reason = (detail instanceof Error ? detail.message : typeof detail === "string" ? detail : "").trim();
-  return `${context}${reason ? ` ${userFacingBrowserError(reason)}` : ""} Ref: ${errorReference(safeCode)}`;
+  return `${context}${reason ? ` ${userFacingBrowserError(reason)}` : ""} Ref: ${codeReference(safeCode)}`;
 }

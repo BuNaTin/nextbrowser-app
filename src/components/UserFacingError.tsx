@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { discordUrl } from "../constants";
 import { trackEvent } from "../lib/analytics";
+import { reportUserFacingMessage } from "../lib/errorReporting";
 import { needsSupportLink } from "../lib/userFacingError";
 
 export function UserFacingError({
@@ -12,7 +14,14 @@ export function UserFacingError({
   /** Always link to Discord with this label, e.g. when the fix lives there. */
   discordLabel?: string;
 }) {
-  const label = discordLabel ?? (needsSupportLink(message) ? "Get help in Discord." : undefined);
+  const supportRef = needsSupportLink(message);
+  const label = discordLabel ?? (supportRef ? "Get help in Discord." : undefined);
+  // A message with a Ref is an internal error the user is looking at. It is
+  // reported by its surface, error code and Ref, once per Ref; the text, which
+  // in a chat turn holds the agent's output, never is.
+  useEffect(() => {
+    if (supportRef) reportUserFacingMessage(surface.replace(/_/g, "-"), message);
+  }, [supportRef, surface, message]);
   return (
     <span className="user-facing-error">
       <span>{message}</span>

@@ -82,6 +82,7 @@ export class Run {
         return value;
       },
     };
+    await resetUi(this.page).catch(() => {});
     try {
       await definition.run(context);
     } catch (error) {

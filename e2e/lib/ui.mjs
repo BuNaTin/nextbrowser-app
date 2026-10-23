@@ -174,6 +174,9 @@ export async function askAgent(page, text, { timeoutMs = 600_000 } = {}) {
 
 /** Closes whatever a failed step left open, so cleanups can use the window. */
 export async function resetUi(page) {
+  // A test build carries an old version, so the app offers an update; "Later" keeps the build.
+  const later = page.getByRole("button", { name: "Later", exact: true });
+  if (await later.isVisible().catch(() => false)) await later.click({ timeout: 5_000 }).catch(() => {});
   for (let i = 0; i < 3; i += 1) {
     const close = page.locator('.modal-overlay button[title="Close"], [role="dialog"] button[aria-label^="Close"], .modal-overlay button:has-text("Cancel")').first();
     if (await close.count() && await close.isVisible().catch(() => false)) await close.click({ timeout: 5_000 }).catch(() => {});

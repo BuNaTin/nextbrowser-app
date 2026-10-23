@@ -1,6 +1,6 @@
 import { exitCountry } from "../lib/oracle.mjs";
 import { blocked } from "../lib/blocked.mjs";
-import { activeWorkspace, createProfile, createWorkspace, deleteCurrentWorkspace, deleteProfile, profileNames, profileStatus, startProfile, stopProfile, switchWorkspace, waitFor } from "../lib/ui.mjs";
+import { activeWorkspace, createProfile, createWorkspace, deleteCurrentWorkspace, deleteProfile, profileNames, profileStatus, resetUi, startProfile, stopProfile, switchWorkspace, waitFor } from "../lib/ui.mjs";
 
 // The checklist's "PO" is read as Poland (PL) and "Ge" as the ISO code GE
 // (Georgia), the code the existing QA profile "Claw GE" uses.
@@ -63,6 +63,7 @@ export default {
 
     for (const profile of rest) {
       await s.step(`Run «${profile.suffix}» and check its exit country`, async () => {
+        await resetUi(s.page);
         try {
           await startProfile(s.page, profile.name);
         } catch (error) {

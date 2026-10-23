@@ -192,6 +192,41 @@ test("executes every recipe step through one persistent MCP process", async () =
   assert.equal(progress.at(-1).phase, "completed");
 });
 
+test("a browser runner that ends on its own reaches onRunnerExit, one the run closes does not", async () => {
+  const exits = [];
+  const crashing = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new Writable({
+      write(chunk, _encoding, callback) {
+        const message = JSON.parse(chunk.toString());
+        if (message.method === "initialize") child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} })}\n`);
+        if (message.method === "tools/call") {
+          child.stderr.write("panic: runtime error: invalid memory address\n");
+          setImmediate(() => child.emit("close", 2, null));
+        }
+        callback();
+      },
+    });
+    child.kill = () => { queueMicrotask(() => child.emit("close", 0)); return true; };
+    return child;
+  };
+  const recipe = { version: 1, actions: [{ tool: "navigate", arguments: { url: "https://example.com" } }] };
+  const onRunnerExit = (result, outcome) => exits.push({ result, outcome });
+  const failed = await executeAutomationRecipe({ executionId: "runner-crash", recipe }, { binary: "nbc", env: {}, spawnImpl: crashing, sleep: async () => {}, onRunnerExit });
+  assert.equal(failed.status, "failed");
+  assert.equal(exits.length, 1);
+  assert.equal(exits[0].result.code, 2);
+  assert.match(exits[0].result.stderr, /^panic: runtime error/);
+
+  const server = fakeMCP((message) => (message.method === "initialize" ? {} : { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }));
+  const completed = await executeAutomationRecipe({ executionId: "runner-closed", recipe }, { binary: "nbc", env: {}, spawnImpl: server.spawnImpl, onRunnerExit });
+  assert.equal(completed.status, "completed");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(exits.length, 1, "the runner the run closed is not reported");
+});
+
 test("retries only transient navigation failures", async () => {
   let opens = 0;
   const server = fakeMCP((message) => {

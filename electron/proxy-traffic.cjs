@@ -2,6 +2,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { tracedBackendFetch } = require("./backend-fetch.cjs");
+const { userError } = require("./user-error.cjs");
 
 const DEFAULT_API_BASE_URL = "https://api.nextbrowser.com";
 
@@ -48,12 +49,12 @@ async function loadBackendConfig({
   try {
     payload = JSON.parse(await fsApi.readFile(configPath({ env, homeDir, platform }), "utf8"));
   } catch {
-    throw new Error("Nextbrowser account configuration is unavailable.");
+    throw userError("Nextbrowser account configuration is unavailable.");
   }
 
   const apiKey = typeof payload.api_key === "string" ? payload.api_key.trim() : "";
   if (!apiKey) {
-    throw new Error("Nextbrowser account is not connected.");
+    throw userError("Nextbrowser account is not connected.");
   }
 
   const configuredBaseURL = env.NEXTBROWSER_DEV_API_BASE_URL
@@ -77,19 +78,21 @@ async function sendNodeMavenInvite(deps = {}) {
       signal: AbortSignal.timeout(10_000),
     });
   } catch {
-    throw new Error("Could not reach Nextbrowser to send the NodeMaven email. Try again.");
+    // The request observer reports the network failure.
+    throw Object.assign(new Error("Could not reach Nextbrowser to send the NodeMaven email. Try again."), { reported: true });
   }
   if (!response.ok) {
     const errorBody = typeof response.json === "function" ? await response.json().catch(() => null) : null;
-    if (response.status === 429) throw new Error("An invitation was sent recently. Check your email or try again in 10 minutes.");
+    const failure = (message) => Object.assign(new Error(message), { status: response.status, reported: response.status >= 500 });
+    if (response.status === 429) throw userError("An invitation was sent recently. Check your email or try again in 10 minutes.");
     if (response.status === 503 && errorBody?.code === "invite_disabled") {
-      throw new Error("NodeMaven invitations are not enabled yet. Use Set up account access to set your password.");
+      throw failure("NodeMaven invitations are not enabled yet. Use Set up account access to set your password.");
     }
     if (response.status === 404 && errorBody?.code === "invite_unavailable") {
-      throw new Error("Your NodeMaven account could not be found. Contact support before purchasing traffic.");
+      throw failure("Your NodeMaven account could not be found. Contact support before purchasing traffic.");
     }
-    if (response.status === 401) throw new Error("Sign in to Nextbrowser, then try sending the NodeMaven email again.");
-    throw new Error("Could not send the NodeMaven email. Try again or contact support.");
+    if (response.status === 401) throw failure("Sign in to Nextbrowser, then try sending the NodeMaven email again.");
+    throw failure("Could not send the NodeMaven email. Try again or contact support.");
   }
   const result = await response.json().catch(() => null);
   if (result?.invite_sent !== true || typeof result.email !== "string" || !Number.isInteger(result.expires_in_days) || result.expires_in_days < 1) {

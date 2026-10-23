@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const reporting = vi.hoisted(() => ({ reportUserFacingError: vi.fn() }));
+vi.mock("../errorReporting", () => reporting);
+
 import { runPass, subscribeHandle } from "./engine";
 import {
   accruedTokens,
@@ -654,5 +658,54 @@ describe("settling the Notify bell", () => {
     const { state } = await runPass(args);
     expect(browser.waitForSelector).toHaveBeenCalledWith(expect.stringContaining("userActions"), expect.any(Number));
     expect(state.handles.author.bellDone).toBe(true);
+  });
+});
+
+describe("error reports from a pass", () => {
+  const reported = () => reporting.reportUserFacingError.mock.calls.map(([report]) => report);
+  const profiles = (patch: Partial<XReplyState> = {}) =>
+    withHandleState({ ...emptyXReplyState(), ...patch }, "author", { watchingSince: 1, lastPostId: "10" });
+
+  beforeEach(() => {
+    reporting.reportUserFacingError.mockClear();
+  });
+
+  it("reports a page x.com never drew, by code only", async () => {
+    const { args } = deps(profiles(), { errorScreens: 99, posts: [{ id: "20" }] });
+    await runPass(args);
+    expect(reported()).toEqual([{ surface: "x-reply-pass", code: "X_PROFILE_NOT_RENDERED" }]);
+  });
+
+  it("reports a signed-in page that does not name its account", async () => {
+    const { args } = deps(watching(), { publisher: "", triggers: NOTICE, posts: [{ id: "20" }] });
+    await runPass(args);
+    expect(reported()).toEqual([{ surface: "x-reply-pass", code: "X_ACCOUNT_NOT_IDENTIFIED" }]);
+  });
+
+  it("reports drafts that failed and the post given up on", async () => {
+    let state = seeded("10");
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { args } = deps(state, { triggers: NOTICE, posts: [{ id: "20" }] }, {
+        runAgent: vi.fn().mockResolvedValue({ code: 1, stdout: "", stderr: "the agent is down" }),
+      });
+      state = (await runPass(args)).state;
+    }
+    expect(reported().map((report) => report.code)).toEqual([
+      "X_REPLY_DRAFT_FAILED", "X_REPLY_DRAFT_FAILED", "X_REPLY_DRAFT_FAILED", "X_REPLY_DRAFT_GAVE_UP",
+    ]);
+  });
+
+  it("reports a reply that was submitted but not confirmed, and one the page refused for good", async () => {
+    const { args } = deps(seeded("10"), { triggers: NOTICE, posts: [{ id: "20" }], publishOutcome: "unverified" });
+    await runPass(args);
+    const { args: refusedArgs } = deps(seeded("10"), { triggers: NOTICE, posts: [{ id: "20" }], publishOutcome: "refused" });
+    await runPass(refusedArgs);
+    expect(reported().map((report) => report.code)).toEqual(["X_REPLY_UNVERIFIED", "X_REPLY_PUBLISH_REFUSED"]);
+  });
+
+  it("reports nothing for a signed-out profile or another signed-in account", async () => {
+    await runPass(deps(profiles(), { signedIn: false, posts: [{ id: "20" }] }).args);
+    await runPass(deps(watching({ publisherHandle: "someone_else" }), { triggers: NOTICE, posts: [{ id: "20" }] }).args);
+    expect(reported()).toEqual([]);
   });
 });

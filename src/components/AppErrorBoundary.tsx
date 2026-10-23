@@ -1,7 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { brandName } from "../constants";
 import { describeError, reportRendererError } from "../lib/errorReporting";
-import { errorReference } from "../lib/userFacingError";
+import { incidentReference } from "../lib/userFacingError";
 
 interface AppErrorBoundaryState {
   reference?: string;
@@ -16,7 +16,7 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErro
   state: AppErrorBoundaryState = {};
 
   static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
-    return { reference: errorReference(describeError(error).message.trim() || "Unknown render error") };
+    return { reference: incidentReference(describeError(error).message.trim() || "Unknown render error") };
   }
 
   componentDidCatch(error: unknown, info: ErrorInfo): void {

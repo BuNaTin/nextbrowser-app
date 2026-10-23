@@ -364,6 +364,78 @@ test("renderer reports are validated: renderer kinds only, identifiers only, no 
   assert.deepEqual(event.breadcrumbs.map((crumb) => crumb.message), ["automation", "profile_start_requested"]);
 });
 
+test("the renderer reports an error the user saw with identifiers only", async (t) => {
+  const h = harness(t);
+  h.reporter.breadcrumbFromRenderer({ category: "navigation", message: "chat" });
+  assert.equal(h.reporter.captureFromRenderer({
+    kind: "command_failed",
+    name: "AGENT_START_FAILED",
+    message: "agent-turn: AGENT_START_FAILED",
+    action: "chat_request_submitted",
+    context: { surface: "agent-turn", code: "AGENT_START_FAILED", ref: "NB-6F2C1A9B-04D2" },
+  }), true);
+  assert.equal(h.reporter.captureFromRenderer({
+    kind: "command_failed",
+    name: "STARTUP_LOCAL_TIMED_OUT",
+    message: "startup: STARTUP_LOCAL_TIMED_OUT",
+    context: { surface: "startup", code: "STARTUP_LOCAL_TIMED_OUT" },
+  }), true);
+  await h.reporter.flush();
+  const body = h.requests[0].body;
+  assertContract(body);
+  const [shown, startup] = body.events;
+  assert.equal(shown.source, "renderer");
+  assert.equal(shown.kind, "command_failed");
+  assert.equal(shown.name, "AGENT_START_FAILED");
+  assert.equal(shown.message, "agent-turn: AGENT_START_FAILED");
+  assert.equal(shown.view, "chat");
+  assert.equal(shown.action, "chat_request_submitted");
+  assert.equal(shown.stack, undefined);
+  assert.deepEqual(shown.context, { surface: "agent-turn", code: "AGENT_START_FAILED", ref: "NB-6F2C1A9B-04D2" });
+  assert.deepEqual(startup.context, { surface: "startup", code: "STARTUP_LOCAL_TIMED_OUT" });
+});
+
+test("a user-facing failure from the renderer carrying any free text is refused", (t) => {
+  const h = harness(t);
+  const valid = {
+    kind: "command_failed",
+    name: "LIVE_VIEW_CONNECT_FAILED",
+    message: "live-view: LIVE_VIEW_CONNECT_FAILED",
+    context: { surface: "live-view", code: "LIVE_VIEW_CONNECT_FAILED", ref: "NB-1234ABCD-00FF" },
+  };
+  const refused = [
+    { ...valid, message: "We couldn't connect Live View. Ref: NB-1234ABCD-00FF" },
+    { ...valid, name: "Error" },
+    { ...valid, stack: "Error: reply text\n    at x (index.js:1:1)" },
+    { ...valid, context: { ...valid.context, text: "the agent's reply" } },
+    { ...valid, context: { ...valid.context, surface: "Live View" }, message: "Live View: LIVE_VIEW_CONNECT_FAILED" },
+    { ...valid, context: { ...valid.context, code: "connect failed" }, name: "connect failed", message: "live-view: connect failed" },
+    { ...valid, context: { ...valid.context, ref: "NB-1234ABCD see chat" } },
+    { ...valid, context: undefined },
+    { ...valid, context: ["live-view", "LIVE_VIEW_CONNECT_FAILED"] },
+  ];
+  for (const payload of refused) assert.equal(h.reporter.captureFromRenderer(payload), false, JSON.stringify(payload));
+  assert.equal(h.reporter.queued.length, 0);
+  assert.equal(h.reporter.captureFromRenderer(valid), true);
+  assert.equal(h.reporter.queued.length, 1);
+});
+
+test("a folded report keeps the latest Ref beside the first", (t) => {
+  const h = harness(t);
+  const shown = (ref) => ({
+    kind: "command_failed",
+    name: "SKILL_INSTALL_FAILED",
+    message: "skill-apply: SKILL_INSTALL_FAILED",
+    context: { surface: "skill-apply", code: "SKILL_INSTALL_FAILED", ref },
+  });
+  h.reporter.captureFromRenderer(shown("NB-AAAAAAAA-0001"));
+  h.reporter.captureFromRenderer(shown("NB-AAAAAAAA-0002"));
+  assert.equal(h.reporter.queued.length, 1);
+  assert.equal(h.reporter.queued[0].count, 2);
+  assert.equal(h.reporter.queued[0].context.ref, "NB-AAAAAAAA-0001");
+  assert.equal(h.reporter.queued[0].context.last_ref, "NB-AAAAAAAA-0002");
+});
+
 test("Retry-After accepts seconds and HTTP dates", () => {
   const now = Date.parse("2026-10-20T10:00:00Z");
   assert.equal(parseRetryAfter("30", now), 30_000);

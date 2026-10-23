@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "../electronBridge";
+import { feedbackErrorMessage } from "../lib/feedbackError";
 import { shouldDismissModalWithEscape } from "../lib/modalKeyboard";
 import { Icon, Spinner } from "./Icon";
 
@@ -33,7 +34,7 @@ export function FeedbackModal({ onClose, onSubmitted }: { onClose: () => void; o
       onSubmitted?.(rating);
     } catch (cause) {
       setStatus("idle");
-      setError(cause instanceof Error ? cause.message : "We couldn't send your feedback. Please try again.");
+      setError(feedbackErrorMessage(cause));
     }
   };
 

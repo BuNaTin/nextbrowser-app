@@ -16,6 +16,7 @@ import { humanBytes } from "../types";
 import { Icon, Spinner } from "./Icon";
 import { activeAutomationExecution, automationExecutionTimeline, automationExecutionView, canContinueWithoutRemoteRunHistory, AUTOMATION_EXECUTION_EVENT, clearActiveAutomationExecution, setActiveAutomationExecution, withAutomationExecutionEvent, type AutomationExecution } from "../lib/automationExecution";
 import { userFacingBrowserError } from "../lib/userFacingBrowserError";
+import { reportUserFacingError } from "../lib/errorReporting";
 import { agentById, agentInvocation } from "../agents";
 import { parseWorkflowAiEdit, workflowAiEditPrompt, workflowAiEditRepairPrompt, type WorkflowAiEdit } from "../lib/workflowAiEdit";
 import { automationRepairTask, shouldAutoRepairAutomation } from "../lib/automationRepair";
@@ -404,7 +405,7 @@ export function AutomationStudio() {
       setShareTarget(undefined);
       setShareEmail("");
       setNotice("Shared. It will appear in Automation Studio when that email signs in.");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_SHARE_FAILED"); }
     finally { setShareBusy(false); }
   };
 
@@ -417,7 +418,7 @@ export function AutomationStudio() {
       setSection(share.source_kind === "workflow" ? "workflows" : "recorder");
       if (accepted.source_kind === "workflow") setSelectedWorkflowId(accepted.id);
       setNotice(`${share.source_kind === "workflow" ? "Workflow" : "Recording"} added to your automation library as your own editable copy.`);
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_SHARE_FAILED"); }
     finally { setShareBusy(false); }
   };
 
@@ -428,7 +429,7 @@ export function AutomationStudio() {
       await invoke("automation_share_decline", { id: share.id });
       await loadIncomingShares();
       setNotice("Shared copy declined.");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_SHARE_FAILED"); }
     finally { setShareBusy(false); }
   };
 
@@ -439,7 +440,7 @@ export function AutomationStudio() {
       await invoke("automation_share_revoke", { id: share.id });
       await loadSentShares();
       setNotice("Pending shared copy revoked.");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_SHARE_FAILED"); }
     finally { setShareBusy(false); }
   };
 
@@ -544,10 +545,13 @@ export function AutomationStudio() {
     return () => window.removeEventListener("focus", refreshAfterExternalChanges);
   }, [section, workspaceId]);
 
-  const reportError = (error: unknown) => {
-    console.error("[AUTOMATION_STUDIO_FAILED]", error);
+  // Shows a failed action in the banner and reports it by code; the banner
+  // text quotes pages and file names, so it is never sent.
+  const reportError = (error: unknown, code = "AUTOMATION_STUDIO_FAILED") => {
+    console.error(`[${code}]`, error);
     setStudioError(userFacingBrowserError(error));
     setNotice(undefined);
+    reportUserFacingError({ surface: "automation-studio", code });
   };
 
   const addExamples = async () => {
@@ -556,7 +560,7 @@ export function AutomationStudio() {
       await invoke("automation_seed_examples", { workspaceId });
       await Promise.all([loadWorkflows(), loadRecordings(), loadArtifacts()]);
       setNotice("Example automations added.");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_EXAMPLES_FAILED"); }
   };
 
   const startRecording = async (destination: "recording" | "workflow" = "recording", source: "hybrid" | "agent" = "hybrid") => {
@@ -626,7 +630,7 @@ export function AutomationStudio() {
       if (s.terminalChat) s.setTerminalChat(false);
       s.setTab(recordingRuntime === "multilogin" ? "live" : "chat");
       await invoke("app_focus");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_RECORDING_START_FAILED"); }
   };
 
   useEffect(() => {
@@ -637,7 +641,9 @@ export function AutomationStudio() {
       : s.defaultSession?.status === "running";
     if (!browserRunning) return;
     void invoke("automation_page_recording_attach", { recordingId: active.id }).catch((error) => {
+      // Nothing is captured from here on, and the user learns it only at Stop.
       console.warn("[AUTOMATION_RECORDER_ATTACH_FAILED]", error);
+      reportUserFacingError({ surface: "automation-recorder", code: "AUTOMATION_RECORDER_ATTACH_FAILED" });
     });
   }, [recordingSince, s.selectedProfile, s.statuses, s.defaultSession?.status]);
 
@@ -664,7 +670,10 @@ export function AutomationStudio() {
         ? capturedRunFromHybridRecording(active.id, await invoke<ManualBrowserRecording>("automation_page_recording_stop", { recordingId: active.id }), agentCaptured)
         : agentCaptured;
       capturedForRetry = captured;
-      if (captured?.captureError) setStudioError(`The browser recorder reported an error during capture: ${captured.captureError}`);
+      if (captured?.captureError) {
+        setStudioError(`The browser recorder reported an error during capture: ${captured.captureError}`);
+        reportUserFacingError({ surface: "automation-recorder", code: "AUTOMATION_RECORDER_CAPTURE_FAILED" });
+      }
       if (captured) {
         const domain = capturedWorkflowDomain(captured.task, captured.evidence);
         const quality = workflowQuality(captured.task, captured.evidence, domain);
@@ -683,10 +692,12 @@ export function AutomationStudio() {
         setRecordingSince(0);
         setRecordingDestination("recording");
         setNotice("Recording stopped. The incomplete attempt was discarded.");
+        // Either the user did nothing, or the recorder caught nothing.
+        reportUserFacingError({ surface: "automation-recorder", code: "AUTOMATION_RECORDING_EMPTY" });
       }
       await loadRecordings();
     } catch (error) {
-      reportError(error);
+      reportError(error, "AUTOMATION_RECORDING_STOP_FAILED");
       // Once the page recorder has returned its capture, it is already stopped.
       // Keep the captured actions available for an explicit save retry instead
       // of restoring a recording banner that can no longer be stopped again.
@@ -758,7 +769,7 @@ export function AutomationStudio() {
       setRecordingReview(undefined);
       await loadRecordings();
     } catch (error) {
-      reportError(error);
+      reportError(error, "AUTOMATION_RECORDING_SAVE_FAILED");
       setRecordingReview((current) => current ? { ...current, saveError: userFacingBrowserError(error) } : current);
     }
     finally { setRecordingStopping(false); }
@@ -797,7 +808,7 @@ export function AutomationStudio() {
       setWorkflowListCollapsed(true);
       setSection("workflows");
       setNotice("Recording saved as a reusable workflow.");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_WORKFLOW_SAVE_FAILED"); }
   };
 
   const updateAction = (index: number, field: "tool" | "arguments", value: string) => {
@@ -954,7 +965,7 @@ export function AutomationStudio() {
       }
       setNotice(`Selected “${result.label || result.tag || "page element"}”. The locator was saved automatically.`);
     } catch (error) {
-      reportError(error);
+      reportError(error, "AUTOMATION_ELEMENT_PICK_FAILED");
     } finally {
       setElementPick(undefined);
     }
@@ -1015,7 +1026,7 @@ export function AutomationStudio() {
       setStudioError(undefined);
       setNotice("Workflow saved.");
       return saved;
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_WORKFLOW_SAVE_FAILED"); }
     finally { setSaving(false); }
     return undefined;
   };
@@ -1073,7 +1084,7 @@ export function AutomationStudio() {
       setWorkflowAiRequest("");
       setWorkflowAiOpen(false);
       setNotice(`${edit.summary} Review the updated steps, then Save or Save & run.`);
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_AI_EDIT_FAILED"); }
     finally { setWorkflowAiBusy(false); }
   };
 
@@ -1097,7 +1108,7 @@ export function AutomationStudio() {
       setSelectedWorkflowId(saved.id);
       setWorkflowListCollapsed(true);
       setNotice("Workflow created. Edit its task and steps, then save it.");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_WORKFLOW_CREATE_FAILED"); }
   };
 
   const deleteWorkflow = async (workflow: BrowserWorkflowSkill) => {
@@ -1112,7 +1123,7 @@ export function AutomationStudio() {
         setWorkflowListCollapsed(false);
       }
       setNotice("Workflow deleted.");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_WORKFLOW_DELETE_FAILED"); }
   };
 
   const duplicateWorkflow = async (workflow: BrowserWorkflowSkill) => {
@@ -1124,7 +1135,7 @@ export function AutomationStudio() {
       setSelectedWorkflowId(copy.id);
       setWorkflowListCollapsed(true);
       setNotice("Workflow duplicated. Edit the copy without changing the original.");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_WORKFLOW_DUPLICATE_FAILED"); }
   };
 
   const selectWorkflow = (id: string) => {
@@ -1217,6 +1228,7 @@ export function AutomationStudio() {
           .catch((error) => console.warn("[AUTOMATION_RUN_HISTORY_UNAVAILABLE] could not persist final run state", error));
       }
       await Promise.all([loadRuns(), loadArtifacts()]);
+      if (result.status === "failed") reportUserFacingError({ surface: "automation-replay", code: "AUTOMATION_STEP_FAILED" });
       if (result.status === "completed") setNotice("Replay completed successfully.");
       else if (result.status === "failed") {
         const failedTool = workflow.actions[result.failedStep ?? completedActions]?.tool;
@@ -1235,6 +1247,7 @@ export function AutomationStudio() {
       setNotice(undefined);
       if (backendRunId) await invoke("automation_run_update", { id: backendRunId, update: { status: "failed", output: { engine: "deterministic", error: technicalMessage } } }).catch(() => undefined);
       setStudioError("The deterministic browser runner could not complete this automation. You can retry or use Repair & run with AI.");
+      reportUserFacingError({ surface: "automation-replay", code: "AUTOMATION_RUNNER_FAILED" });
     }
   };
 
@@ -1288,6 +1301,7 @@ export function AutomationStudio() {
       setPlayback(failed);
       setActiveAutomationExecution(failed);
       setStudioError(automatic ? detail : message);
+      reportUserFacingError({ surface: "automation-repair", code: "AUTOMATION_REPAIR_START_FAILED" });
     }
   };
 
@@ -1369,7 +1383,7 @@ export function AutomationStudio() {
       }
       setRecordings((current) => current.filter((item) => item.id !== recording.id));
       setNotice("Recording deleted.");
-    } catch (error) { reportError(error); }
+    } catch (error) { reportError(error, "AUTOMATION_RECORDING_DELETE_FAILED"); }
   };
 
   return (

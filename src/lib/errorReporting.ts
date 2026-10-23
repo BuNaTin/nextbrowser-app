@@ -1,11 +1,11 @@
-import { errorReference, isBackgroundSyncFailure } from "./userFacingError";
+import { errorCodeForRef, errorRefsIn, incidentReference, isBackgroundSyncFailure } from "./userFacingError";
 
 // Renderer half of client error reporting. Errors and breadcrumbs go to the
 // main process over the preload bridge; the main process scrubs, folds,
 // queues and sends them (electron/client-error-reporter.cjs). Nothing here
 // may throw: a broken reporter must not become another app error.
 
-export type RendererErrorKind = "exception" | "unhandled_rejection" | "react_render";
+export type RendererErrorKind = "exception" | "unhandled_rejection" | "react_render" | "command_failed";
 
 export interface RendererErrorReport {
   kind: RendererErrorKind;
@@ -17,8 +17,23 @@ export interface RendererErrorReport {
   context?: Record<string, string>;
 }
 
+/** An error the app showed the user, named by identifiers only. */
+export interface UserFacingErrorReport {
+  /** Where the user saw it, in kebab-case, e.g. "scheduled-run-start". */
+  surface: string;
+  /** The error code, e.g. "AGENT_START_FAILED". */
+  code: string;
+  /** The Ref the user read, when the message carried one. */
+  ref?: string;
+}
+
 // Views and UI actions are code identifiers, never user text.
 const IDENTIFIER = /^[A-Za-z0-9_.:/-]{1,100}$/;
+// The main process accepts exactly these shapes for a user-facing failure
+// (electron/client-error-reporter.cjs) and refuses anything else.
+const SURFACE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
+const ERROR_REF = /^NB-[0-9A-F]{8}(?:-[0-9A-F]{4})?$/;
 const RATE_WINDOW_MS = 60_000;
 const MAX_REPORTS_PER_WINDOW = 30;
 // Chromium raises this for a layout that settles over two frames; it is not a
@@ -29,6 +44,10 @@ let currentView = "";
 let lastAction = "";
 let windowStartedAt = 0;
 let reportsInWindow = 0;
+// A Ref names one incident, however many places show it.
+const reportedRefs = new Set<string>();
+// The notice and the report of one uncaught error are made by two listeners.
+const unexpectedErrorRefs = new WeakMap<object, string>();
 
 function bridge() {
   return typeof window === "undefined" ? undefined : window.nextbrowser;
@@ -76,17 +95,18 @@ export function unexpectedErrorDetail(event: ErrorEvent | PromiseRejectionEvent)
   return event.message;
 }
 
-/** The Ref shown with the "Unexpected app error" notice for the same failure. */
-export function unexpectedErrorReference(detail: string): string {
-  return errorReference(detail.trim() || "Unknown renderer error");
+/** The Ref of an uncaught error: the same for its "Unexpected app error" notice and its report. */
+export function unexpectedErrorReference(event: ErrorEvent | PromiseRejectionEvent): string {
+  let ref = unexpectedErrorRefs.get(event);
+  if (!ref) {
+    ref = incidentReference(unexpectedErrorDetail(event).trim() || "Unknown renderer error");
+    unexpectedErrorRefs.set(event, ref);
+  }
+  return ref;
 }
 
-export function reportRendererError(
-  kind: RendererErrorKind,
-  error: unknown,
-  context: Record<string, string> = {},
-  componentStack?: string | null,
-): boolean {
+/** Hands one report to the main process, within the renderer's rate limit. */
+function send(build: () => RendererErrorReport): boolean {
   try {
     const target = bridge();
     if (!target?.reportError) return false;
@@ -97,9 +117,23 @@ export function reportRendererError(
     }
     if (reportsInWindow >= MAX_REPORTS_PER_WINDOW) return false;
     reportsInWindow += 1;
+    target.reportError(build());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function reportRendererError(
+  kind: RendererErrorKind,
+  error: unknown,
+  context: Record<string, string> = {},
+  componentStack?: string | null,
+): boolean {
+  return send(() => {
     const described = describeError(error);
     const stack = [described.stack, componentStack ? `Component stack:${componentStack}` : ""].filter(Boolean).join("\n\n");
-    const report: RendererErrorReport = {
+    return {
       kind,
       name: described.name,
       message: described.message,
@@ -108,8 +142,50 @@ export function reportRendererError(
       ...(lastAction ? { action: lastAction } : {}),
       context,
     };
-    target.reportError(report);
-    return true;
+  });
+}
+
+/**
+ * Reports a failure the app caught and showed the user, which therefore never
+ * reached the global error handlers. The report names the failure by
+ * identifiers only: the message the user read can quote an agent's reply, a
+ * page or a file name, so its text is never sent. Each Ref is reported once.
+ */
+export function reportUserFacingError({ surface, code, ref }: UserFacingErrorReport): boolean {
+  if (typeof surface !== "string" || surface.length > 64 || !SURFACE.test(surface) || !ERROR_CODE.test(code)) return false;
+  const safeRef = ref && ERROR_REF.test(ref) ? ref : undefined;
+  if (safeRef && reportedRefs.has(safeRef)) return false;
+  const sent = send(() => ({
+    kind: "command_failed",
+    name: code,
+    message: `${surface}: ${code}`,
+    ...(currentView ? { view: currentView } : {}),
+    ...(lastAction ? { action: lastAction } : {}),
+    context: { surface, code, ...(safeRef ? { ref: safeRef } : {}) },
+  }));
+  if (sent && safeRef) reportedRefs.add(safeRef);
+  return sent;
+}
+
+/**
+ * Reports a message the app showed, by the last Ref in it that this window
+ * made (the Ref says which error code it stands for). Without such a Ref, or
+ * when that Ref was already reported, `fallbackCode` is reported instead,
+ * if given. A Ref from elsewhere, such as one in a message saved before a
+ * restart or in a profile start failure the main process worded, is never
+ * reported here. The message text is never sent.
+ */
+export function reportUserFacingMessage(surface: string, message: string, fallbackCode?: string): boolean {
+  try {
+    const refs = errorRefsIn(message);
+    for (let index = refs.length - 1; index >= 0; index -= 1) {
+      const ref = refs[index];
+      const code = errorCodeForRef(ref);
+      if (!code) continue;
+      if (!reportedRefs.has(ref)) return reportUserFacingError({ surface, code, ref });
+      break;
+    }
+    return fallbackCode ? reportUserFacingError({ surface, code: fallbackCode }) : false;
   } catch {
     return false;
   }
@@ -121,7 +197,7 @@ export function installErrorReporting(target: Window = window): () => void {
     const detail = unexpectedErrorDetail(event);
     if (IGNORED_MESSAGES.test(detail) || isBackgroundSyncFailure(detail)) return;
     reportRendererError("exception", event.error ?? event.message, {
-      ref: unexpectedErrorReference(detail),
+      ref: unexpectedErrorReference(event),
       ...(event.filename ? { source_file: event.filename, line: String(event.lineno || 0), column: String(event.colno || 0) } : {}),
     });
   };
@@ -130,7 +206,7 @@ export function installErrorReporting(target: Window = window): () => void {
     // Background project sync failures are already handled (and their 5xx
     // reported with a trace id by the main process).
     if (isBackgroundSyncFailure(detail)) return;
-    reportRendererError("unhandled_rejection", event.reason, { ref: unexpectedErrorReference(detail) });
+    reportRendererError("unhandled_rejection", event.reason, { ref: unexpectedErrorReference(event) });
   };
   target.addEventListener("error", onError);
   target.addEventListener("unhandledrejection", onRejection);
@@ -146,4 +222,5 @@ export function resetErrorReportingForTests(): void {
   lastAction = "";
   windowStartedAt = 0;
   reportsInWindow = 0;
+  reportedRefs.clear();
 }

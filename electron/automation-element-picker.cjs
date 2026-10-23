@@ -1,4 +1,5 @@
 const { createMCPClient } = require("./automation-runner.cjs");
+const { userError } = require("./user-error.cjs");
 
 const PICK_TIMEOUT_MS = 120_000;
 const activePicks = new Map();
@@ -171,11 +172,11 @@ const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mill
 async function pickAutomationElement(input, deps) {
   const pickId = String(input.pickId || "").trim();
   if (!pickId || !/^[A-Za-z0-9_-]{1,128}$/.test(pickId)) throw new Error("Invalid element picker ID.");
-  if (activePicks.size) throw new Error("Finish or cancel the current element selection first.");
+  if (activePicks.size) throw userError("Finish or cancel the current element selection first.");
   const profile = String(input.profile || "").trim();
   const runtime = ["clawbrowser", "camoufox", "chromium", "multilogin"].includes(input.runtime) ? input.runtime : "clawbrowser";
   const args = [...(profile ? ["--profile", profile] : []), "--runtime", runtime, ...(input.runtimeBin ? ["--runtime-bin", input.runtimeBin] : []), "mcp"];
-  const client = createMCPClient({ binary: deps.binary, args, env: deps.env, spawnImpl: deps.spawnImpl });
+  const client = createMCPClient({ binary: deps.binary, args, env: deps.env, spawnImpl: deps.spawnImpl, onExit: deps.onRunnerExit });
   const state = { client, cancelled: false };
   activePicks.set(pickId, state);
   const cleanupExpression = `(() => { const state=window.__nextbrowserElementPicker; if(state?.cleanup)state.cleanup(); delete window.__nextbrowserElementPicker; return true; })()`;
@@ -184,7 +185,7 @@ async function pickAutomationElement(input, deps) {
     const openUrl = String(input.openUrl || "").trim();
     if (openUrl) {
       const parsed = new URL(openUrl);
-      if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("The workflow preview URL must use http:// or https://.");
+      if (!["http:", "https:"].includes(parsed.protocol)) throw userError("The workflow preview URL must use http:// or https://.");
       resultFromMCP(await client.callTool("open", { url: parsed.toString() }));
       resultFromMCP(await client.callTool("wait", { load: true, timeout: "20s" }));
     }
@@ -201,7 +202,7 @@ async function pickAutomationElement(input, deps) {
       if (result) return result;
     }
     if (state.cancelled) return { cancelled: true };
-    throw new Error("Element selection timed out. Try again and click an element within two minutes.");
+    throw userError("Element selection timed out. Try again and click an element within two minutes.");
   } catch (error) {
     if (state.cancelled) return { cancelled: true };
     throw error;

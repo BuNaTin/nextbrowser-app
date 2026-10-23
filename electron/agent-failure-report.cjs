@@ -1,0 +1,110 @@
+const os = require("node:os");
+
+// Decides which agent CLI runs (Codex, Claude Code, ...) are worth an error
+// report, and finds the reason for a failed run in the CLI's error output.
+// A run that exits non-zero on its own is reported, and so are a run that
+// exits 0 without a reply and a run the app stopped because it took too long.
+// A stop the user asked for, a run cut short by quitting the app and a
+// sign-in the chat already asks for are not. Standard output is never copied
+// into a report: it is the reply, which can quote page data. From standard
+// error only the error line is taken, because the rest of it is the agent's
+// transcript.
+
+// Same rule as finishAgentRun in src/store.ts, which asks the user to sign in.
+const AUTH_FAILURE = /(?:failed to authenticate|oauth session expired|could not be refreshed|not logged in|sign in required|login required)/i;
+const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+// What the CLI prints when it gives up: "ERROR: ...", "Error: ...",
+// "API Error: ...", "stream error: ...", or a Rust panic.
+const FATAL_LINE = /^(?:\[[^\]]*\]\s*)?(?:[A-Za-z]+ )?(?:error|fatal)\s*:|panicked at /i;
+// Codex also logs non-fatal internal errors as tracing lines
+// ("2026-10-07T14:07:47Z ERROR codex_core::x: ..."); one is the reason only
+// when nothing fatal was printed.
+const LOG_ERROR_LINE = /^\S*\d{2}:\d{2}:\d{2}\S*\s+(?:ERROR|FATAL)\s/;
+const REASON_MAX = 300;
+const AGENT_ID = /^[a-z][a-z0-9-]{0,31}$/;
+const RUNS = new Set(["chat", "plain", "workflow_author", "terminal"]);
+// A terminal CLI the user interrupted with Ctrl+C (130, or Windows'
+// STATUS_CONTROL_C_EXIT) ended on purpose.
+const INTERRUPTED_EXIT_CODES = new Set([130, 3221225786]);
+// Signals that end a process only when it crashed. node-pty reports the
+// signal's number; aliases (SIGIOT for SIGABRT) come later in the list.
+const CRASH_SIGNALS = new Set(["SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE"]);
+const SIGNAL_NAMES = new Map(Object.entries(os.constants.signals).reverse().map(([name, number]) => [number, name]));
+
+function agentFailureReason(stderr) {
+  const lines = String(stderr || "").replace(ANSI, "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).reverse();
+  const line = lines.find((candidate) => FATAL_LINE.test(candidate)) || lines.find((candidate) => LOG_ERROR_LINE.test(candidate)) || "";
+  return line.length > REASON_MAX ? `${line.slice(0, REASON_MAX - 1)}…` : line;
+}
+
+function agentName(agentId) {
+  return AGENT_ID.test(String(agentId || "")) ? String(agentId) : "unknown";
+}
+
+/**
+ * Describes one finished agent run: the reason to show in the chat, and an
+ * event only when the failure is unexpected (see the rule at the top).
+ * `outcome.timedOut` marks a run the app itself stopped for taking too long.
+ */
+function describeAgentResult({ agentId, result, outcome = {}, durationMs, plain = false, run = plain ? "plain" : "chat" }) {
+  const code = Number.isInteger(result?.code) ? result.code : -1;
+  const stderr = String(result?.stderr ?? "");
+  const reason = code === 0 ? "" : agentFailureReason(stderr);
+  if (outcome.stopped || outcome.quitting) return { reason, event: null };
+  const agent = agentName(agentId);
+  const event = (name, message) => ({
+    source: "agent",
+    kind: "command_failed",
+    name,
+    message,
+    context: {
+      agent,
+      exit_code: String(code),
+      run: RUNS.has(run) ? run : "chat",
+      ...(Number.isFinite(durationMs) ? { duration_ms: String(Math.round(durationMs)) } : {}),
+    },
+    fingerprintExtra: agent,
+  });
+  if (outcome.timedOut) return { reason, event: event("AGENT_TIMED_OUT", `${agent} did not finish in time and was stopped`) };
+  if (code === 0) {
+    return { reason, event: String(result?.stdout ?? "").trim() ? null : event("AGENT_EMPTY_REPLY", `${agent} exited with code 0 without a reply`) };
+  }
+  if (AUTH_FAILURE.test(`${stderr}\n${result?.stdout ?? ""}`)) return { reason, event: null };
+  return { reason, event: event("AGENT_STOPPED_UNEXPECTEDLY", `${agent} exited with code ${code}: ${reason || "no error line in its output"}`) };
+}
+
+/**
+ * Describes an agent CLI in a terminal that ended by itself with an error or
+ * a crash. A terminal the app closed (Close, leaving the page, quitting) or
+ * the user interrupted is not reported. Nothing the terminal printed is sent.
+ */
+function describeTerminalExit({ agentId, exitCode, signal, uptimeMs, closedByApp = false }) {
+  if (closedByApp) return { event: null };
+  const code = Number.isInteger(exitCode) ? exitCode : 0;
+  const signalName = typeof signal === "string" ? signal : SIGNAL_NAMES.get(signal) || "";
+  const crashed = CRASH_SIGNALS.has(signalName);
+  if (!crashed && (code === 0 || INTERRUPTED_EXIT_CODES.has(code))) return { event: null };
+  const agent = agentName(agentId);
+  return {
+    event: {
+      source: "agent",
+      kind: "command_failed",
+      name: "TERMINAL_EXITED_UNEXPECTEDLY",
+      message: `${agent} terminal exited with ${crashed ? `signal ${signalName}` : `code ${code}`}`,
+      context: {
+        agent,
+        exit_code: String(code),
+        run: "terminal",
+        ...(signalName ? { signal: signalName } : {}),
+        ...(Number.isFinite(uptimeMs) ? { uptime_ms: String(Math.round(uptimeMs)) } : {}),
+      },
+      fingerprintExtra: agent,
+    },
+  };
+}
+
+module.exports = {
+  agentFailureReason,
+  describeAgentResult,
+  describeTerminalExit,
+};

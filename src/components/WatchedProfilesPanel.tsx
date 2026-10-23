@@ -104,7 +104,8 @@ export function WatchedProfilesPanel({ entry, onClose }: { entry: SkillEntry; on
   const watchlistDevice = useStore((s) => s.watchlistDevices[entry.id]);
   const setWatchlistDevice = useStore((s) => s.setWatchlistDevice);
   const [cloudPhones, setCloudPhones] = useState<{ id: string; name: string; folderId?: string }[]>([]);
-  const watchlistStep = useStore((s) => (s.watchlistBusy === entry.id ? s.watchlistStep : undefined));
+  // The line outlives the action, so a failed Open or Check can be read.
+  const watchlistStep = useStore((s) => (s.watchlistStepFor === entry.id ? s.watchlistStep : undefined));
   const stopWatchlistRun = useStore((s) => s.stopWatchlistRun);
 
   const engine = watchlist?.engine === "x-reply";

@@ -1,6 +1,7 @@
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
+const { userError } = require("./user-error.cjs");
 
 const DEFAULT_PORT = 22;
 const MAX_CONFIG_BYTES = 1024 * 1024;
@@ -333,7 +334,7 @@ async function readDirectives(rootConfigPath, options) {
     const empty = () => ({ directives: [], conditional });
     if (depth > MAX_INCLUDE_DEPTH || filesRead >= MAX_CONFIG_FILES) return empty();
     if (isNetworkPath(file)) {
-      if (required) throw new Error("Network SSH config paths are not supported.");
+      if (required) throw userError("Network SSH config paths are not supported.");
       warnings.add("Some SSH Include paths were skipped because network paths are not supported.");
       return empty();
     }
@@ -363,11 +364,11 @@ async function readDirectives(rootConfigPath, options) {
       throw error;
     }
     if (!stat.isFile()) {
-      if (required) throw new Error(`SSH config is not a file: ${absolutePath}`);
+      if (required) throw userError(`SSH config is not a file: ${absolutePath}`);
       return empty();
     }
     if (stat.size > MAX_CONFIG_BYTES) {
-      if (required) throw new Error(`SSH config is too large: ${absolutePath}`);
+      if (required) throw userError(`SSH config is too large: ${absolutePath}`);
       return empty();
     }
     totalBytesRead += stat.size;
@@ -378,11 +379,11 @@ async function readDirectives(rootConfigPath, options) {
     try {
       const text = await fsApi.readFile(canonicalPath, "utf8");
       if (Buffer.byteLength(text, "utf8") > MAX_CONFIG_BYTES) {
-        if (required) throw new Error(`SSH config is too large: ${absolutePath}`);
+        if (required) throw userError(`SSH config is too large: ${absolutePath}`);
         return empty();
       }
       if (looksLikePrivateKey(text)) {
-        if (required) throw new Error(`The selected file is a private key, not an SSH config: ${absolutePath}`);
+        if (required) throw userError(`The selected file is a private key, not an SSH config: ${absolutePath}`);
         warnings.add("An SSH Include was skipped because it contains private-key data, not SSH configuration.");
         return empty();
       }
@@ -503,11 +504,11 @@ function expandIdentityPath(value, homeDir) {
 async function discoverSSHHosts(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const requestedConfigPath = options.configPath || defaultSSHConfigPath(homeDir);
-  if (isNetworkPath(requestedConfigPath)) throw new Error("Network SSH config paths are not supported.");
+  if (isNetworkPath(requestedConfigPath)) throw userError("Network SSH config paths are not supported.");
   const configPath = path.resolve(requestedConfigPath);
   const fsApi = options.fsApi || fs;
   if (options.explicitConfig === true && !isAllowedExplicitConfigPath(configPath)) {
-    throw new Error("Choose an SSH config named config or using a .conf or .config extension.");
+    throw userError("Choose an SSH config named config or using a .conf or .config extension.");
   }
   if (options.explicitConfig === true) {
     let canonicalPath = configPath;
@@ -517,7 +518,7 @@ async function discoverSSHHosts(options = {}) {
       // The required config read below returns the useful filesystem error.
     }
     if (!isAllowedExplicitConfigPath(canonicalPath)) {
-      throw new Error("Choose an SSH config named config or using a .conf or .config extension.");
+      throw userError("Choose an SSH config named config or using a .conf or .config extension.");
     }
   }
   const env = options.env || process.env;

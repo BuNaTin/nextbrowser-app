@@ -345,6 +345,7 @@ test("runtime update refuses an in-flight app launch and releases the guard on f
     clawbrowserRuntimeSessionNames: async () => [],
     assertClawbrowserSessionsStopped,
     run: async () => ({ code: 0 }),
+    userError: require("./user-error.cjs").userError,
     process,
   });
   vm.runInContext(`let clawbrowserRuntimeUpdateActive = false; let clawbrowserRuntimeLaunches = 0;

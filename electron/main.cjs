@@ -116,7 +116,7 @@ const { runAgentProcess } = require("./agent-process.cjs");
 const { createClaudeStreamDecoder, createCodexStepDecoder } = require("./agent-steps.cjs");
 const { assertManualProxyRuntimeSupport } = require("./manual-proxy-runtime.cjs");
 const { testManualProxy } = require("./manual-proxy-test.cjs");
-const { describeProfileRequestRejection, describeProfileStartFailure, logProfileStartFailure } = require("./profile-start-failure.cjs");
+const { describeProfileFailureEvent, describeProfileRequestRejection, describeProfileStartFailure, logProfileStartFailure } = require("./profile-start-failure.cjs");
 const {
   DASBROWSER_DOWNLOADS,
   adaptDasbrowserArgs,
@@ -135,13 +135,22 @@ const { clientEnvironmentAllowed, createClientEnvironment } = require("./client-
 const { createEnvironmentCollector } = require("./client-environment-collect.cjs");
 const { describeBackendRequest, setBackendClientInfo, setBackendRequestObserver, tracedBackendFetch } = require("./backend-fetch.cjs");
 const { describeNbcResult, isNextctlBinary } = require("./nbc-failure-report.cjs");
+const { describeAgentResult, describeTerminalExit } = require("./agent-failure-report.cjs");
+const { describeInvokeFailure, describeMainFailure } = require("./invoke-failure-report.cjs");
+const { describeAutomationResult } = require("./automation-failure-report.cjs");
+const { userError } = require("./user-error.cjs");
 
 const children = new Map();
+// Agent runs the user stopped: their non-zero exit is not a failure. Runs the
+// app stopped because they took too long are a failure of their own.
+const stoppedAgentRuns = new Set();
+const timedOutAgentRuns = new Set();
 const terminals = new Map();
 
 function killTerminalsForWebContents(webContentsId) {
   for (const [id, record] of terminals) {
     if (record.webContentsId !== webContentsId) continue;
+    record.closedByApp = true;
     try { record.process.kill(); } catch { /* process may already have exited */ }
     agentControlScopes.delete(record.controlToken);
     agentControlArtifactScopes.delete(record.controlToken);
@@ -269,6 +278,46 @@ function reportNbcResult(args, result, outcome, durationMs) {
   } catch {
     // Reporting never changes a command's result.
   }
+}
+/** Reports a failed agent run and returns the reason to show in the chat. */
+function reportAgentResult(details) {
+  try {
+    const { reason, event } = describeAgentResult(details);
+    if (event) errorReporter.capture(event);
+    return reason;
+  } catch {
+    // Reporting never changes a run's result.
+    return "";
+  }
+}
+/** Captures the event of a describe… call (see *-failure-report.cjs). */
+function reportDescribed(describe) {
+  try {
+    const { event } = describe();
+    if (event) errorReporter.capture(event);
+  } catch {
+    // Reporting never changes the outcome.
+  }
+}
+/** Reports a failed IPC command or agent control request; the caller rethrows or answers it. */
+function reportInvokeFailure(command, error) {
+  reportDescribed(() => describeInvokeFailure({ command, error }));
+}
+/**
+ * Reports a failure the user sees as a status (an app update, an install)
+ * and marks the error as judged, so the IPC wrapper does not report it again
+ * when it is rethrown to the renderer.
+ */
+function reportMainFailure(name, error, context) {
+  reportDescribed(() => describeMainFailure({ name, error, context }));
+  try { if (error && typeof error === "object") error.reported = true; } catch { /* frozen */ }
+}
+// nbc results the classifier in reportNbcResult has judged. An error built
+// from one is not reported again, whether the result was reported or expected.
+const classifiedNbcResults = new WeakSet();
+function nbcResultError(result, error) {
+  if (classifiedNbcResults.has(result)) error.reported = true;
+  return error;
 }
 const AGENT_CONTROL_ROUTES = new Set(["/profile/start", "/profile/stop", "/artifact/save", "/project/create", "/project/list", "/project/delete", "/personal-proxies/list"]);
 function agentControlAction(request) {
@@ -521,7 +570,10 @@ async function run(binary, args, extraEnv = {}, options = {}) {
     timeoutMs: options.timeoutMs,
     ...(observed ? { onSettled: (settled) => { outcome = settled; } } : {}),
   });
-  if (observed) reportNbcResult(args, result, outcome, Date.now() - startedAt);
+  if (observed) {
+    reportNbcResult(args, result, outcome, Date.now() - startedAt);
+    classifiedNbcResults.add(result);
+  }
   return result;
 }
 // Scanning every known Clawbrowser profile (a machine can accumulate dozens
@@ -562,6 +614,11 @@ async function nextctlHasAutomationTrace(binary) {
       .catch(() => false));
   }
   return nextctlAutomationTraceSupport.get(binary);
+}
+// An `nbc mcp` runner (replay, recorder, element picker) that could not start
+// or ended on its own goes through the nbc classifier like any nbc call.
+function reportRunnerExit(result, outcome, durationMs) {
+  reportNbcResult(["mcp"], result, outcome, durationMs);
 }
 function setNextctlInstallStatus(status, patch = {}) {
   nextctlInstallStatus = { status, ...patch, updatedAt: Date.now() };
@@ -662,16 +719,17 @@ async function installManagedNextctl() {
       const extracted = findNextctlInTree(extractDir);
       if (!extracted) throw new Error("Downloaded nextctl archive did not contain a nextctl binary.");
       // Reject incompatible releases before replacing an installed binary.
-      await requireVerificationCapableCLI(extracted, run);
+      await requireCompatibleNextctl(extracted);
       await fs.mkdir(managedNextctlRoot(), { recursive: true });
       await fs.copyFile(extracted, managedNextctlBin());
       if (process.platform !== "win32") await fs.chmod(managedNextctlBin(), 0o755);
-      await requireVerificationCapableCLI(managedNextctlBin(), run);
+      await requireCompatibleNextctl(managedNextctlBin());
       const version = await readCLIVersion(managedNextctlBin(), run);
       setNextctlInstallStatus("ready", { path: managedNextctlBin(), version });
       return managedNextctlBin();
     } catch (error) {
       setNextctlInstallStatus("failed", { message: error?.message || String(error) });
+      reportMainFailure("NEXTCTL_INSTALL_FAILED", error);
       throw error;
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
@@ -697,16 +755,26 @@ async function resolveNextctl() {
   for (const candidate of [...new Set(candidates)]) if (await nextctlHasSkill(candidate)) return candidate;
   return candidates[0] || null;
 }
+// The probe's nbc result is classified in run(), so a refusal is not reported
+// again by whoever rethrows it.
+async function requireCompatibleNextctl(binary) {
+  try {
+    await requireVerificationCapableCLI(binary, run);
+  } catch (error) {
+    if (binary) error.reported = true;
+    throw error;
+  }
+}
 async function resolveOrInstallNextctl() {
   const existing = await resolveNextctl();
   if (existing) {
-    await requireVerificationCapableCLI(existing, run);
+    await requireCompatibleNextctl(existing);
     verifiedNextctlBin = existing;
     setNextctlInstallStatus("ready", { path: existing });
     return existing;
   }
   const installed = await installManagedNextctl();
-  await requireVerificationCapableCLI(installed, run);
+  await requireCompatibleNextctl(installed);
   verifiedNextctlBin = installed;
   return installed;
 }
@@ -721,7 +789,7 @@ async function executeNextctlRaw(commandArgs, options = {}) {
   let adaptedArgs = commandArgs;
   const browserRuntime = requestedBrowserRuntime(adaptedArgs);
   if (browserRuntime === "clawbrowser" && requiresBrowserRuntime(adaptedArgs) && clawbrowserRuntimeUpdateActive) {
-    throw new Error("Clawbrowser cannot start while its runtime update is being installed. Retry after the update finishes.");
+    throw userError("Clawbrowser cannot start while its runtime update is being installed. Retry after the update finishes.");
   }
   const clawbrowserLaunch = browserRuntime === "clawbrowser" && requiresBrowserRuntime(adaptedArgs);
   if (clawbrowserLaunch) clawbrowserRuntimeLaunches += 1;
@@ -750,6 +818,7 @@ async function executeNextctlRaw(commandArgs, options = {}) {
         return result;
       } catch (error) {
         setBrowserRuntimeInstallStatus("camoufox", "failed", { message: String(error?.message || error) });
+        reportMainFailure("BROWSER_RUNTIME_INSTALL_FAILED", error, { runtime: "camoufox" });
         throw error;
       }
     }
@@ -766,9 +835,11 @@ function sendControlResponse(response, status, body) {
 
 // The agent relays this body to the user, so it leads with a readable
 // message and keeps the raw nextctl result under diagnostics. The same Ref
-// is written to profile-start.log beside crash.log.
+// is written to profile-start.log beside crash.log and sent in the error
+// report, so support can find it.
 function sendHostProfileFailure(response, { action, profile, runtime, startedAt }, { result, error }) {
   const failure = describeProfileStartFailure({ action, profile, runtime, result, error, durationMs: Date.now() - startedAt });
+  reportDescribed(() => describeProfileFailureEvent(failure));
   const logFile = logProfileStartFailure(dataDir(), failure, {
     appVersion: app.getVersion(),
     platform: process.platform,
@@ -781,6 +852,7 @@ function sendHostProfileFailure(response, { action, profile, runtime, startedAt 
 async function ensureAgentControlServer() {
   if (agentControlServer) return agentControlURL;
   agentControlServer = http.createServer((request, response) => reportingContext.run({ action: agentControlAction(request) }, () => {
+    const controlAction = reportingContext.getStore().action;
     // Set once the request names a profile, so a host error thrown while
     // starting it is still reported for that profile.
     let hostProfile;
@@ -825,6 +897,7 @@ async function ensureAgentControlServer() {
         } catch (error) {
           const message = String(error?.message || "Project deletion failed.");
           const invalidSelector = /^(Specify one project|Project not found|More than one project|Project ID and name|The active agent)/.test(message);
+          if (!invalidSelector) reportInvokeFailure(controlAction, error);
           sendControlResponse(response, invalidSelector ? 400 : 500, { ok: false, error: "project_delete_failed", message });
           return;
         }
@@ -927,7 +1000,10 @@ async function ensureAgentControlServer() {
     })().catch((error) => {
       if (response.headersSent) return;
       if (hostProfile) sendHostProfileFailure(response, hostProfile, { error });
-      else sendControlResponse(response, 500, { ok: false, error: error?.message || "start_failed" });
+      else {
+        reportInvokeFailure(controlAction, error);
+        sendControlResponse(response, 500, { ok: false, error: error?.message || "start_failed" });
+      }
     });
   }));
   await new Promise((resolve, reject) => {
@@ -962,12 +1038,13 @@ async function ensureClawbrowserRuntime(nextctlBin, options = {}) {
     const installed = resolveBrowserRuntime(runtimeOptions);
     if (!installed) {
       const detail = (result.stderr || result.stdout || "Clawbrowser installation failed").trim();
-      throw new Error(detail);
+      throw result.code === 0 ? new Error(detail) : nbcResultError(result, new Error(detail));
     }
     setBrowserRuntimeInstallStatus("clawbrowser", "ready");
     return installed;
   })().catch((error) => {
     setBrowserRuntimeInstallStatus("clawbrowser", "failed");
+    reportMainFailure("BROWSER_RUNTIME_INSTALL_FAILED", error, { runtime: "clawbrowser" });
     throw error;
   }).finally(() => {
     browserInstallPromise = null;
@@ -1003,10 +1080,10 @@ async function ensureDasbrowserRuntime({ force = false, reportStatus = true, req
   dasbrowserInstallPromise = (async () => {
     const install = beginBrowserRuntimeInstall(requestId);
     if (process.platform === "darwin" && process.arch !== "arm64") {
-      throw new Error("The official DasBrowser download currently supports Apple Silicon Macs only.");
+      throw userError("The official DasBrowser download currently supports Apple Silicon Macs only.");
     }
     if (process.platform !== "darwin" && process.platform !== "win32") {
-      throw new Error("DasBrowser is currently available only for macOS and Windows.");
+      throw userError("DasBrowser is currently available only for macOS and Windows.");
     }
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "nextbrowser-dasbrowser-"));
     // What the Windows setup reported, for the error when no browser appears.
@@ -1073,7 +1150,10 @@ async function ensureDasbrowserRuntime({ force = false, reportStatus = true, req
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
     }
   })().catch((error) => {
-    if (reportStatus) setBrowserRuntimeInstallStatus("dasbrowser", "failed");
+    if (reportStatus) {
+      setBrowserRuntimeInstallStatus("dasbrowser", "failed");
+      reportMainFailure("BROWSER_RUNTIME_INSTALL_FAILED", error, { runtime: "dasbrowser" });
+    }
     throw error;
   }).finally(() => {
     dasbrowserInstallPromise = null;
@@ -1139,12 +1219,12 @@ function multiloginCommandError(result) {
   try {
     const payload = JSON.parse(result.stdout || "{}");
     const message = String(payload?.error?.message || "").trim();
-    if (message) return new Error(message);
+    if (message) return nbcResultError(result, new Error(message));
   } catch {
     // Fall through to the bounded command output below.
   }
   const output = String(result.stderr || result.stdout || "").trim().slice(0, 800);
-  return new Error(output || "Multilogin connection check failed.");
+  return nbcResultError(result, new Error(output || "Multilogin connection check failed."));
 }
 async function listMultiloginProfiles(token, args, folderId) {
   const bin = await resolveOrInstallNextctl();
@@ -1222,7 +1302,7 @@ async function multiloginStatus() {
 async function connectMultilogin(bearerToken) {
   await initializeMultiloginCredential();
   if (!await multiloginCredentialStore?.available()) {
-    throw new Error("Secure credential storage is unavailable on this device.");
+    throw userError("Secure credential storage is unavailable on this device.");
   }
   const automationToken = await exchangeAutomationToken({ bearerToken });
   const profiles = await loadMultiloginProfiles(automationToken);
@@ -1244,9 +1324,9 @@ async function connectMultilogin(bearerToken) {
 // profile store, so creation goes straight to `nbc --runtime multilogin`.
 async function createMultiloginProfile(args = {}) {
   await initializeMultiloginCredential();
-  if (!multiloginAutomationToken) throw new Error("Connect Multilogin before creating a profile.");
+  if (!multiloginAutomationToken) throw userError("Connect Multilogin before creating a profile.");
   const name = String(args.name || "").trim();
-  if (!name) throw new Error("Profile name is required.");
+  if (!name) throw userError("Profile name is required.");
   const proxyId = String(args.proxyId || "").trim();
   const proxy = proxyId ? await resolvePersonalProxy(proxyId, { env: childEnv() }) : undefined;
   const bin = await resolveOrInstallNextctl();
@@ -1266,9 +1346,9 @@ async function createMultiloginProfile(args = {}) {
 
 async function createMultiloginMobileProfile(args = {}) {
   await initializeMultiloginCredential();
-  if (!multiloginAutomationToken) throw new Error("Connect Multilogin before creating a cloud phone.");
+  if (!multiloginAutomationToken) throw userError("Connect Multilogin before creating a cloud phone.");
   const name = String(args.name || "").trim();
-  if (!name) throw new Error("Cloud phone name is required.");
+  if (!name) throw userError("Cloud phone name is required.");
   const country = String(args.country || "").trim().toUpperCase();
   const bin = await resolveOrInstallNextctl();
   if (!bin) throw new Error("nextctl is required to create Multilogin cloud phones.");
@@ -1373,6 +1453,9 @@ function appUpdatesSupported() {
     ["darwin", "win32"].includes(process.platform) &&
     !app.getVersion().includes("-demo.");
 }
+// Builds without an update manifest (dev / electron-builder --dir) can't
+// self-update; that is "disabled", not a failure.
+const APP_UPDATES_UNAVAILABLE = /app-update\.yml|No published versions on GitHub/i;
 function configureAutoUpdater() {
   if (!appUpdatesSupported()) return;
   autoUpdater.autoDownload = false;
@@ -1382,17 +1465,23 @@ function configureAutoUpdater() {
   autoUpdater.on("update-not-available", (info) => setAppUpdateStatus("not-available", { version: info.version }));
   autoUpdater.on("download-progress", (progress) => setAppUpdateStatus("downloading", { version: appUpdateStatus.version, percent: Math.round(progress.percent ?? 0) }));
   autoUpdater.on("update-downloaded", (info) => setAppUpdateStatus("downloaded", { version: info.version }));
-  autoUpdater.on("error", (error) => setAppUpdateStatus("error", { message: error?.message || String(error) }));
+  autoUpdater.on("error", (error) => {
+    // The updater emits the error before the promise of the call that failed
+    // rejects, so the status still names the phase. reportUpdaterError then
+    // finds the error judged and does not report it twice.
+    const phase = { checking: "check", available: "download", downloading: "download", downloaded: "install" }[appUpdateStatus.status] || "updater";
+    if (!APP_UPDATES_UNAVAILABLE.test(error?.message || String(error))) reportMainFailure("APP_UPDATE_FAILED", error, { phase });
+    setAppUpdateStatus("error", { message: error?.message || String(error) });
+  });
 }
-function reportUpdaterError(error) {
+function reportUpdaterError(error, phase) {
   const message = error?.message || String(error);
-  // Builds without an update manifest (dev / electron-builder --dir) can't
-  // self-update — treat that as disabled rather than a hard error, and never
-  // let it bubble up as an uncaught exception.
-  if (/app-update\.yml|No published versions on GitHub/i.test(message)) {
+  // Never let an updater failure bubble up as an uncaught exception.
+  if (APP_UPDATES_UNAVAILABLE.test(message)) {
     setAppUpdateStatus("disabled", { message: "App updates unavailable in this build." });
   } else {
     setAppUpdateStatus("error", { message });
+    reportMainFailure("APP_UPDATE_FAILED", error, { phase });
   }
 }
 function checkForAppUpdate() {
@@ -1402,11 +1491,11 @@ function checkForAppUpdate() {
   }
   try {
     return autoUpdater.checkForUpdates().catch((error) => {
-      reportUpdaterError(error);
+      reportUpdaterError(error, "check");
       return null;
     });
   } catch (error) {
-    reportUpdaterError(error);
+    reportUpdaterError(error, "check");
     return null;
   }
 }
@@ -1416,13 +1505,13 @@ const downloadAppUpdate = createAppUpdateDownload({
   setStatus: setAppUpdateStatus,
   check: checkForAppUpdate,
   download: () => autoUpdater.downloadUpdate(),
-  reportError: reportUpdaterError,
+  reportError: (error) => reportUpdaterError(error, "download"),
 });
 function startAutoUpdater() {
   try {
     configureAutoUpdater();
   } catch (error) {
-    reportUpdaterError(error);
+    reportUpdaterError(error, "configure");
     return;
   }
   if (!appUpdatesSupported()) return;
@@ -1498,6 +1587,7 @@ async function checkForBrowserRuntimeUpdates() {
     setBrowserRuntimeUpdateStatus(status);
     return status;
   }).catch((error) => {
+    reportMainFailure("BROWSER_RUNTIME_UPDATE_CHECK_FAILED", error);
     const status = {
       status: "error",
       checkedAt: Date.now(),
@@ -1656,7 +1746,7 @@ async function stopClawbrowserRuntimeSessions(nextctlBin, sessionNames) {
 }
 async function assertClawbrowserRuntimeIdle(nextctlBin) {
   if (clawbrowserRuntimeLaunches > 0) {
-    throw new Error("Clawbrowser profiles are still starting. Wait for them to finish, then stop them before installing the update.");
+    throw userError("Clawbrowser profiles are still starting. Wait for them to finish, then stop them before installing the update.");
   }
   const sessionNames = await clawbrowserRuntimeSessionNames();
   await stopClawbrowserRuntimeSessions(nextctlBin, sessionNames);
@@ -1699,7 +1789,7 @@ async function installClawbrowserWithNextctl(nextctlBin) {
     } catch {
       // Use the bounded command output below.
     }
-    throw new Error(message || String(result.stderr || result.stdout || "").trim().slice(0, 800) || "nextctl could not install Clawbrowser.");
+    throw nbcResultError(result, new Error(message || String(result.stderr || result.stdout || "").trim().slice(0, 800) || "nextctl could not install Clawbrowser."));
   }
 }
 async function updateClawbrowserRuntime(latestVersion) {
@@ -1872,13 +1962,18 @@ async function installBrowserRuntimeUpdates(requestedRuntimes = []) {
       requestedRuntimes: requested,
       checkForUpdates: checkForBrowserRuntimeUpdates,
       installRuntime: async (update) => {
-        if (update.runtime === "clawbrowser") await updateClawbrowserRuntime(update.latestVersion);
-        else if (update.runtime === "camoufox") await updateCamoufoxRuntime(update.latestVersion);
-        else if (update.runtime === "dasbrowser") await ensureDasbrowserRuntime({ force: true, reportStatus: false });
-        const expected = assertRuntimeReleaseVersion(update.latestVersion);
-        const installed = await installedBrowserRuntimeVersion(update.runtime);
-        if (!installed || compareVersions(installed, expected) < 0) {
-          throw new Error(`${update.name} ${expected} was downloaded, but the installed version is still ${installed || "unknown"}.`);
+        try {
+          if (update.runtime === "clawbrowser") await updateClawbrowserRuntime(update.latestVersion);
+          else if (update.runtime === "camoufox") await updateCamoufoxRuntime(update.latestVersion);
+          else if (update.runtime === "dasbrowser") await ensureDasbrowserRuntime({ force: true, reportStatus: false });
+          const expected = assertRuntimeReleaseVersion(update.latestVersion);
+          const installed = await installedBrowserRuntimeVersion(update.runtime);
+          if (!installed || compareVersions(installed, expected) < 0) {
+            throw new Error(`${update.name} ${expected} was downloaded, but the installed version is still ${installed || "unknown"}.`);
+          }
+        } catch (error) {
+          reportMainFailure("BROWSER_RUNTIME_UPDATE_FAILED", error, { runtime: update.runtime });
+          throw error;
         }
       },
       onStatus: ({ status, ...patch }) => setBrowserRuntimeUpdateInstallStatus(status, patch),
@@ -1899,13 +1994,20 @@ function apiBaseURL(raw) {
   return accountAPIBaseURL(raw, process.env);
 }
 async function apiFetchJSON(baseURL, route, options = {}) {
-  const response = await backendFetch(`${apiBaseURL(baseURL)}${route}`, {
-    ...options,
-    headers: {
-      "content-type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+  let response;
+  try {
+    response = await backendFetch(`${apiBaseURL(baseURL)}${route}`, {
+      ...options,
+      headers: {
+        "content-type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    // The request observer reports network failures and 5xx responses.
+    if (error && typeof error === "object") error.reported = true;
+    throw error;
+  }
   const text = await response.text();
   let body = null;
   if (text.trim()) {
@@ -1914,7 +2016,7 @@ async function apiFetchJSON(baseURL, route, options = {}) {
   }
   if (!response.ok) {
     const message = body?.message || body?.error || `API request failed (${response.status})`;
-    throw new Error(message);
+    throw Object.assign(new Error(message), { status: response.status, reported: response.status >= 500 });
   }
   return body;
 }
@@ -1947,7 +2049,7 @@ async function invokeCommand(command, args = {}, sender) {
         return true;
       } catch (error) {
         quittingForUpdate = false;
-        reportUpdaterError(error);
+        reportUpdaterError(error, "install");
         return false;
       }
     }
@@ -1958,7 +2060,7 @@ async function invokeCommand(command, args = {}, sender) {
     case "multilogin_mobile_profile_create": return await createMultiloginMobileProfile(args);
     case "multilogin_folders_list": {
       await initializeMultiloginCredential();
-      if (!multiloginAutomationToken) throw new Error("Connect Multilogin before choosing a folder.");
+      if (!multiloginAutomationToken) throw userError("Connect Multilogin before choosing a folder.");
       const bin = await resolveOrInstallNextctl();
       if (!bin) throw new Error("nextctl is required to read Multilogin folders.");
       const result = await run(
@@ -2003,10 +2105,10 @@ async function invokeCommand(command, args = {}, sender) {
     }
     case "manual_proxy_profile_create": {
       const profileName = String(args.profileName || "").trim();
-      if (!profileName) throw new Error("Profile name is required.");
+      if (!profileName) throw userError("Profile name is required.");
       if (args.runtime === "multilogin") {
         // Never fall back to a Clawbrowser profile; Multilogin has its own create path.
-        throw new Error("Create Multilogin profiles with a personal proxy from the Multilogin option.");
+        throw userError("Create Multilogin profiles with a personal proxy from the Multilogin option.");
       }
       const runtime = ["clawbrowser", "dasbrowser", "camoufox"].includes(args.runtime)
         ? args.runtime
@@ -2031,7 +2133,7 @@ async function invokeCommand(command, args = {}, sender) {
     case "manual_proxy_profile_request_approve": {
       const requestId = String(args.id || "").trim();
       const proxyId = String(args.proxyId || "").trim();
-      if (!requestId || !proxyId) throw new Error("Profile request and personal proxy are required.");
+      if (!requestId || !proxyId) throw userError("Profile request and personal proxy are required.");
       const proxy = await resolvePersonalProxy(proxyId, { env: childEnv() });
       assertManualProxyRuntimeSupport(String(args.runtime || "clawbrowser"), proxy);
       return await executeNextctl([
@@ -2046,7 +2148,7 @@ async function invokeCommand(command, args = {}, sender) {
     }
     case "manual_proxy_profile_update": {
       const profileName = String(args.profileName || "").trim();
-      if (!profileName) throw new Error("Profile name is required.");
+      if (!profileName) throw userError("Profile name is required.");
       const runtime = ["clawbrowser", "dasbrowser", "camoufox"].includes(args.runtime)
         ? args.runtime
         : "clawbrowser";
@@ -2070,9 +2172,9 @@ async function invokeCommand(command, args = {}, sender) {
     case "nextctl_resolve": return await resolveOrInstallNextctl();
     case "nextctl_install_status": return nextctlInstallStatus;
     case "nextctl_reinstall": {
-      if (process.env.NEXTCTL_BIN) throw new Error("Update the CLI selected by NEXTCTL_BIN, then restart Nextbrowser.");
+      if (process.env.NEXTCTL_BIN) throw userError("Update the CLI selected by NEXTCTL_BIN, then restart Nextbrowser.");
       const installed = await installManagedNextctl();
-      await requireVerificationCapableCLI(installed, run);
+      await requireCompatibleNextctl(installed);
       verifiedNextctlBin = installed;
       return true;
     }
@@ -2112,9 +2214,9 @@ async function invokeCommand(command, args = {}, sender) {
     case "workspace_delete": return await deleteWorkspace(String(args.id || ""), { env: childEnv() });
     case "feedback_submit": {
       const rating = Number(args.rating);
-      if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new Error("Choose a rating from 1 to 5.");
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw userError("Choose a rating from 1 to 5.");
       const comment = typeof args.comment === "string" ? args.comment.trim() : "";
-      if (comment.length > 2_000) throw new Error("Feedback is limited to 2,000 characters.");
+      if (comment.length > 2_000) throw userError("Feedback is limited to 2,000 characters.");
       try {
         return await submitFeedback({
           id: `desktop-feedback:${randomUUID()}`,
@@ -2126,7 +2228,7 @@ async function invokeCommand(command, args = {}, sender) {
           },
         }, { env: childEnv() });
       } catch (error) {
-        if (error?.status === 401) throw new Error("Sign in to your Nextbrowser account before sending feedback.");
+        if (error?.status === 401) throw userError("Sign in to your Nextbrowser account before sending feedback.");
         throw error;
       }
     }
@@ -2139,7 +2241,7 @@ async function invokeCommand(command, args = {}, sender) {
       const name = String(args.name || "").trim();
       const runtime = String(args.runtime || "");
       if (!workspaceId || !name || !["clawbrowser", "camoufox", "dasbrowser"].includes(runtime)) {
-        throw new Error("A workspace, profile name, and browser runtime are required.");
+        throw userError("A workspace, profile name, and browser runtime are required.");
       }
       for (const [token, record] of activeChatProfileScopes) {
         if (record.workspaceId !== workspaceId) continue;
@@ -2204,22 +2306,22 @@ async function invokeCommand(command, args = {}, sender) {
       // real Ctrl/Cmd+ zoom does, instead of naively scaling pixel values
       // that were never meant to grow past the window's own size.
       const factor = Number(args.factor);
-      if (!Number.isFinite(factor) || factor < 0.5 || factor > 2) throw new Error("Zoom factor out of range.");
+      if (!Number.isFinite(factor) || factor < 0.5 || factor > 2) throw userError("Zoom factor out of range.");
       if (sender && !sender.isDestroyed()) sender.setZoomFactor(factor);
       return null;
     }
     case "agent_authorize": {
-      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw new Error(`${args.binary} executable not found.`);
+      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw userError(`${args.binary} executable not found.`);
       const r = await run(bin, ["--version"]); if (r.code !== 0) throw new Error(`${args.binary} is not ready: ${(r.stdout + r.stderr).trim()}`);
       return (r.stdout + r.stderr).trim() || args.binary;
     }
     case "agent_check_login": {
       if (!args.statusArgs?.length) return null;
-      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw new Error(`${args.binary} executable not found.`);
+      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw userError(`${args.binary} executable not found.`);
       return agentLoginStatus(await run(bin, args.statusArgs));
     }
     case "open_terminal_login": {
-      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw new Error(`${args.binary} executable not found.`);
+      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw userError(`${args.binary} executable not found.`);
       const loginArgs = args.loginArgs || [];
       if (process.platform === "darwin") {
         const cmd = [bin, ...loginArgs].map(quotePosix).join(" ").replaceAll("\\", "\\\\").replaceAll('"', '\\"');
@@ -2242,9 +2344,9 @@ async function invokeCommand(command, args = {}, sender) {
     }
     case "ssh_config_hosts": {
       const requestedPath = typeof args.configPath === "string" ? args.configPath.trim() : "";
-      if (requestedPath.length > 4096 || requestedPath.includes("\0")) throw new Error("Invalid SSH config path.");
+      if (requestedPath.length > 4096 || requestedPath.includes("\0")) throw userError("Invalid SSH config path.");
       if (requestedPath.startsWith("\\\\") || /^\/\/[^/]/.test(requestedPath)) {
-        throw new Error("Network SSH config paths are not supported.");
+        throw userError("Network SSH config paths are not supported.");
       }
       const configPath = requestedPath ? path.resolve(expand(requestedPath)) : defaultSSHConfigPath(home());
       return discoverSSHHosts({
@@ -2269,10 +2371,10 @@ async function invokeCommand(command, args = {}, sender) {
       if (result.canceled || !result.filePaths[0]) return null;
       const selectedPath = result.filePaths[0];
       if (selectedPath.startsWith("\\\\") || /^\/\/[^/]/.test(selectedPath)) {
-        throw new Error("Network SSH config paths are not supported.");
+        throw userError("Network SSH config paths are not supported.");
       }
       if (!isAllowedExplicitConfigPath(selectedPath)) {
-        throw new Error("Choose an SSH config named config or using a .conf or .config extension.");
+        throw userError("Choose an SSH config named config or using a .conf or .config extension.");
       }
       return path.resolve(selectedPath);
     }
@@ -2363,19 +2465,21 @@ async function invokeCommand(command, args = {}, sender) {
       const requestedRuntime = ["clawbrowser", "dasbrowser", "camoufox", "multilogin"].includes(args.runtime) ? args.runtime : "clawbrowser";
       if (requestedRuntime === "multilogin") await initializeMultiloginCredential();
       const runtimeBin = requestedRuntime === "dasbrowser" ? await ensureDasbrowserRuntime() : undefined;
-      return await executeAutomationRecipe({
+      const runtime = requestedRuntime === "dasbrowser" ? "chromium" : requestedRuntime;
+      const result = await executeAutomationRecipe({
         executionId: args.executionId,
         recipe: args.recipe,
         sharedCopy: args.sharedCopy === true || sharedAutomationCopies().has(String(args.sourceId || "")),
         parameters: args.parameters,
         profile: args.profile,
-        runtime: requestedRuntime === "dasbrowser" ? "chromium" : requestedRuntime,
+        runtime,
         multiloginProfileId: args.multiloginProfileId,
         multiloginFolderId: args.multiloginFolderId,
         runtimeBin,
       }, {
         binary,
         env: childEnv(),
+        onRunnerExit: reportRunnerExit,
         onProgress: (progress) => emit("automation:recipe-progress", progress),
         onLocalAction: (action, context) => saveAutomationArtifact({
           action,
@@ -2386,6 +2490,8 @@ async function invokeCommand(command, args = {}, sender) {
         }),
         onStep: args.backendRunId ? ({ position, ...update }) => updateAutomationRunStep(String(args.backendRunId), position, update, { env: childEnv() }).catch(() => undefined) : undefined,
       });
+      reportDescribed(() => describeAutomationResult({ result, runtime }));
+      return result;
     }
     case "automation_recipe_cancel": return cancelAutomationRecipe(String(args.executionId || ""));
     case "automation_page_recording_start": {
@@ -2400,7 +2506,7 @@ async function invokeCommand(command, args = {}, sender) {
         runtime: requestedRuntime === "dasbrowser" ? "chromium" : requestedRuntime,
         runtimeBin,
         attach: args.attach !== false,
-      }, { binary, env: childEnv() });
+      }, { binary, env: childEnv(), onRunnerExit: reportRunnerExit });
     }
     case "automation_page_recording_attach": return await attachAutomationPageRecording(String(args.recordingId || ""));
     case "automation_page_recording_stop": return await stopAutomationPageRecording(String(args.recordingId || ""));
@@ -2424,6 +2530,7 @@ async function invokeCommand(command, args = {}, sender) {
         }, {
           binary,
           env: childEnv(),
+          onRunnerExit: reportRunnerExit,
           onReady: () => { if (owner && !owner.isDestroyed()) owner.minimize(); },
         });
       } finally {
@@ -2450,10 +2557,10 @@ async function invokeCommand(command, args = {}, sender) {
       for (const selected of result.filePaths.slice(0, 20)) {
         const source = await fs.realpath(selected);
         const stat = await fs.stat(source);
-        if (!stat.isFile()) throw new Error(`${path.basename(source)} is not a regular file.`);
-        if (stat.size > 30 * 1024 * 1024) throw new Error(`${path.basename(source)} is larger than the 30 MB per-file limit used for reliable Claude Code and Codex attachments.`);
+        if (!stat.isFile()) throw userError(`${path.basename(source)} is not a regular file.`);
+        if (stat.size > 30 * 1024 * 1024) throw userError(`${path.basename(source)} is larger than the 30 MB per-file limit used for reliable Claude Code and Codex attachments.`);
         totalSize += stat.size;
-        if (totalSize > 600 * 1024 * 1024) throw new Error("Terminal attachments are limited to 600 MB per selection.");
+        if (totalSize > 600 * 1024 * 1024) throw userError("Terminal attachments are limited to 600 MB per selection.");
         const safeName = path.basename(source).replace(/[\\/:*?"<>|\x00-\x1f]/g, "-").slice(0, 180) || "file";
         const target = path.join(attachmentDir, `${randomUUID()}-${safeName}`);
         // Prefer copy-on-write cloning where the filesystem supports it. This
@@ -2471,14 +2578,15 @@ async function invokeCommand(command, args = {}, sender) {
       const target = path.resolve(String(args.path || ""));
       const relative = path.relative(attachmentRoot, target);
       if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-        throw new Error("Refusing to remove a file outside the terminal attachment directory.");
+        throw userError("Refusing to remove a file outside the terminal attachment directory.");
       }
       await fs.rm(target, { force: true });
       return null;
     }
     case "open_path": {
+      // A file the user moved or deleted, or one no app opens.
       const error = await shell.openPath(path.resolve(String(args.path || "")));
-      if (error) throw new Error(error);
+      if (error) throw userError(error);
       return null;
     }
     case "show_item_in_folder": {
@@ -2503,7 +2611,7 @@ async function invokeCommand(command, args = {}, sender) {
       return null;
     }
     case "remove_temp_file": {
-      const file = path.resolve(args.path); if (path.dirname(file) !== path.resolve(os.tmpdir())) throw new Error("Refusing to remove a file outside the temporary directory.");
+      const file = path.resolve(args.path); if (path.dirname(file) !== path.resolve(os.tmpdir())) throw userError("Refusing to remove a file outside the temporary directory.");
       await fs.rm(file, { force: true }); return null;
     }
     case "app_data_read": { try { return await fs.readFile(path.join(dataDir(), safeName(args.name)), "utf8"); } catch (e) { if (e.code === "ENOENT") return null; throw e; } }
@@ -2564,7 +2672,7 @@ async function invokeCommand(command, args = {}, sender) {
       }
     }
     case "agent_run": {
-      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw new Error(`${args.binary} executable not found.`);
+      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw userError(`${args.binary} executable not found.`);
       const conversationId = String(args.conversationId || "");
       const controlToken = randomUUID();
       const controlURL = await ensureAgentControlServer();
@@ -2619,6 +2727,7 @@ async function invokeCommand(command, args = {}, sender) {
         ? createClaudeStreamDecoder({ onText: emitText, onStep: emitStep })
         : null;
       const codexSteps = args.stepFormat === "codex-stderr" ? createCodexStepDecoder({ onStep: emitStep }) : null;
+      const startedAt = Date.now();
       try {
         return await runAgentProcess({
           spawnProcess: spawn,
@@ -2649,7 +2758,14 @@ async function invokeCommand(command, args = {}, sender) {
             // The raw stdout is the event stream; the rest of the app reads it
             // as the reply (empty-reply and sign-in checks included).
             if (claudeStream) result.stdout = claudeStream.end();
-            emit("agent:done", [args.replyId, result.code, result.stderr, result.stdout]);
+            const reason = reportAgentResult({
+              agentId: String(args.agentId || ""),
+              result,
+              durationMs: Date.now() - startedAt,
+              plain,
+              outcome: { stopped: stoppedAgentRuns.delete(args.replyId), timedOut: timedOutAgentRuns.delete(args.replyId), quitting: appQuitting },
+            });
+            emit("agent:done", [args.replyId, result.code, result.stderr, result.stdout, reason]);
           },
         });
       } finally {
@@ -2660,23 +2776,34 @@ async function invokeCommand(command, args = {}, sender) {
       }
     }
     case "workflow_author_run": {
-      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw new Error(`${args.binary} executable not found.`);
+      const bin = resolveBinary(args.binary, args.envVar); if (!bin) throw userError(`${args.binary} executable not found.`);
       const spec = commandSpec(bin, args.args || []);
+      const startedAt = Date.now();
       return new Promise((resolve, reject) => {
         const child = spawn(spec.file, spec.args, {
           cwd: args.workingDir || undefined,
           env: childEnv(), windowsHide: true,
           stdio: [args.stdinText != null ? "pipe" : "ignore", "pipe", "pipe"],
         });
-        let stdout = ""; let stderr = ""; let settled = false;
+        let stdout = ""; let stderr = ""; let settled = false; let timedOut = false;
         const append = (current, chunk) => (current + chunk.toString()).slice(-32 * 1024);
         child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
         child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
-        const timer = setTimeout(() => { if (!settled) child.kill(); }, 45_000);
+        const timer = setTimeout(() => { if (!settled) { timedOut = true; child.kill(); } }, 45_000);
         child.on("error", (error) => { clearTimeout(timer); if (!settled) { settled = true; reject(error); } });
         child.on("close", (code) => {
           clearTimeout(timer);
-          if (!settled) { settled = true; resolve({ code: code ?? -1, stdout, stderr }); }
+          if (settled) return;
+          settled = true;
+          const result = { code: code ?? -1, stdout, stderr };
+          reportAgentResult({
+            agentId: String(args.agentId || path.basename(String(args.binary || "")).replace(/\.(?:exe|cmd)$/i, "")).toLowerCase(),
+            result,
+            run: "workflow_author",
+            durationMs: Date.now() - startedAt,
+            outcome: { timedOut, quitting: appQuitting },
+          });
+          resolve(result);
         });
         if (args.stdinText != null) child.stdin.end(args.stdinText);
       });
@@ -2684,6 +2811,10 @@ async function invokeCommand(command, args = {}, sender) {
     case "agent_terminate": {
       const child = children.get(args.replyId);
       if (child) {
+        // The app's own time limits pass reason "timeout": that run failed,
+        // while a stop without a reason is the user's.
+        if (args.reason === "timeout") timedOutAgentRuns.add(args.replyId);
+        else stoppedAgentRuns.add(args.replyId);
         await terminateProcessTree(child.pid, { includeRoot: true });
         children.delete(args.replyId);
       }
@@ -2695,7 +2826,7 @@ async function invokeCommand(command, args = {}, sender) {
       const agent = TERMINAL_AGENTS[resolvedAgentId];
       if (!agent) throw new Error(`Terminal support for “${requestedAgentId || "this agent"}” is unavailable in the running Nextbrowser ${app.getVersion()} build. Restart Nextbrowser to complete its update, then try again. [TERMINAL_AGENT_UNAVAILABLE]`);
       const bin = resolveBinary(agent.binary, agent.envVar);
-      if (!bin) throw new Error(`${agent.binary} CLI not found.`);
+      if (!bin) throw userError(`${agent.binary} CLI not found.`);
       const id = randomUUID();
       const controlToken = randomUUID();
       const controlURL = await ensureAgentControlServer();
@@ -2757,6 +2888,8 @@ async function invokeCommand(command, args = {}, sender) {
       const record = {
         process: terminal,
         agentId: resolvedAgentId,
+        startedAt: Date.now(),
+        closedByApp: false,
         ready: false,
         buffer: [],
         exit: null,
@@ -2772,6 +2905,13 @@ async function invokeCommand(command, args = {}, sender) {
       });
       terminal.onExit(({ exitCode, signal }) => {
         record.exit = [exitCode, signal];
+        reportDescribed(() => describeTerminalExit({
+          agentId: record.agentId,
+          exitCode,
+          signal,
+          uptimeMs: Date.now() - record.startedAt,
+          closedByApp: record.closedByApp || appQuitting,
+        }));
         if (record.ready) {
           terminals.delete(id);
           agentControlScopes.delete(record.controlToken);
@@ -2882,6 +3022,7 @@ async function invokeCommand(command, args = {}, sender) {
     case "terminal_kill": {
       const id = String(args.id || "");
       const record = terminals.get(id);
+      if (record) record.closedByApp = true;
       if (record) record.process.kill();
       if (record) agentControlScopes.delete(record.controlToken);
       if (record) agentControlArtifactScopes.delete(record.controlToken);
@@ -2921,7 +3062,9 @@ async function invokeCommand(command, args = {}, sender) {
     }
     case "remote_signal_send": {
       const socket = remoteSignalSockets.get(String(args.id || ""));
-      if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Remote signaling socket is not open.");
+      // A send that loses the race with the socket's close is not a failure
+      // of its own: the viewer handles the close event.
+      if (!socket || socket.readyState !== WebSocket.OPEN) throw Object.assign(new Error("Remote signaling socket is not open."), { expected: true });
       socket.send(String(args.data || ""));
       return null;
     }
@@ -3105,7 +3248,15 @@ if (!gotLock) {
       const action = /^[a-z0-9_]{1,64}$/.test(String(command)) ? command : "unknown";
       // nbc calls get their own, more specific breadcrumb from run().
       if (action !== "nextctl_run") errorReporter.breadcrumb("ipc", action);
-      return reportingContext.run({ action }, () => invokeCommand(command, args, event.sender));
+      return reportingContext.run({ action }, async () => {
+        try {
+          return await invokeCommand(command, args, event.sender);
+        } catch (error) {
+          // The renderer still gets the error; most of them it only displays.
+          reportInvokeFailure(action, error);
+          throw error;
+        }
+      });
     });
     // Fire-and-forget reports from the app window; webviews have no say.
     const fromAppWindow = (event) => {

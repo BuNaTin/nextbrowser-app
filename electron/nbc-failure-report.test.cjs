@@ -1,5 +1,9 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { createClientErrorReporter } = require("./client-error-reporter.cjs");
 const { describeNbcResult, expectsJSON, isNextctlBinary, nbcCommandName } = require("./nbc-failure-report.cjs");
 
 const envelope = (code, message = "failed") => JSON.stringify({ ok: false, command: "x", error: { code, message, hint: "" } });
@@ -33,7 +37,7 @@ test("a successful JSON command is a breadcrumb only", () => {
 });
 
 test("expected outcomes the UI explains are not reported", () => {
-  for (const code of ["VERIFY_FAILED", "PROFILE_NOT_FOUND", "API_KEY_REQUIRED", "PROXY_TRAFFIC_EXHAUSTED", "MULTILOGIN_AUTH_INVALID", "REDDIT_LOGIN_REQUIRED", "MOBILE_UI_NODE_NOT_FOUND"]) {
+  for (const code of ["VERIFY_BUSY", "PROFILE_NOT_FOUND", "API_KEY_REQUIRED", "PROXY_TRAFFIC_EXHAUSTED", "MULTILOGIN_AUTH_INVALID", "REDDIT_LOGIN_REQUIRED", "MOBILE_UI_NODE_NOT_FOUND"]) {
     const { breadcrumb, event } = describeNbcResult({ args: ["start", "--format", "json"], result: { code: 1, stdout: envelope(code), stderr: "" } });
     assert.equal(event, null, code);
     assert.ok(breadcrumb.endsWith(code));
@@ -50,9 +54,11 @@ test("expected outcomes the UI explains are not reported", () => {
   assert.equal(startUnreachable.event.name, "CDP_UNREACHABLE", "a start that cannot reach its own browser is reported");
 });
 
-test("cancellations, timeouts and usage probes are not reported", () => {
+test("cancellations, timeouts of commands nobody waits on and usage probes are not reported", () => {
   assert.equal(describeNbcResult({ args: ["start", "--format", "json"], result: { code: -1, stdout: "", stderr: "Command cancelled." }, outcome: { cancelled: true } }).event, null);
-  assert.equal(describeNbcResult({ args: ["start", "--format", "json"], result: { code: -1, stdout: "", stderr: "Command timed out after 240 seconds." }, outcome: { timedOut: true, signal: "SIGTERM" } }).event, null);
+  for (const args of [["status", "--profile", "p", "--format", "json"], ["tabs", "--format", "json"], ["proxy-traffic", "--format", "json"], ["--version"]]) {
+    assert.equal(describeNbcResult({ args, result: { code: -1, stdout: "", stderr: "Command timed out after 15 seconds." }, outcome: { timedOut: true, signal: "SIGTERM" } }).event, null, args.join(" "));
+  }
   assert.equal(describeNbcResult({ args: ["update", "--browser-only", "--format", "json"], result: { code: 1, stdout: "", stderr: "Error: unknown flag: --browser-only" } }).event, null);
   assert.equal(describeNbcResult({ args: ["mcp", "--automation-trace-file", "rel"], result: { code: 1, stdout: "", stderr: "automation trace file must be an absolute path" } }).event, null, "text-mode exit 1 is nbc's ordinary error");
 });
@@ -93,4 +99,80 @@ test("crashes, spawn failures and missing JSON are reported", () => {
   assert.equal(garbled.name, "NBC_NON_JSON_OUTPUT");
   assert.ok(!garbled.message.includes("page data"), "standard output is never copied into a report");
   assert.match(garbled.message, /warning: slow disk/);
+});
+
+test("a verified start is classified by the code nextctl wrapped in VERIFY_FAILED", () => {
+  const wrapped = (inner) => envelope("VERIFY_FAILED", `VERIFY_FAILED: browser stopped: ${inner}`);
+  const vendor = describeNbcResult({ args: ["--verify-on-start-only", "start", "--profile", "p", "--format", "json"], result: { code: 1, stdout: wrapped("VENDOR_UNAVAILABLE: External browser runtime operation did not complete before timeout (context deadline exceeded)"), stderr: "" } });
+  assert.equal(vendor.event.name, "VENDOR_UNAVAILABLE");
+  assert.equal(vendor.event.context.nbc_code, "VERIFY_FAILED");
+  assert.equal(vendor.event.context.cause_code, "VENDOR_UNAVAILABLE");
+  assert.ok(vendor.breadcrumb.endsWith("VERIFY_FAILED(VENDOR_UNAVAILABLE)"));
+  assert.equal(describeNbcResult({ args: ["start", "--format", "json"], result: { code: 1, stdout: wrapped("LAUNCH_FAILED: net::ERR_TUNNEL_CONNECTION_FAILED"), stderr: "" } }).event, null, "the profile's own proxy");
+  assert.equal(describeNbcResult({ args: ["start", "--format", "json"], result: { code: 1, stdout: wrapped("PROXY_TRAFFIC_EXHAUSTED: traffic used up"), stderr: "" } }).event, null, "an expected inner code stays expected");
+  assert.equal(describeNbcResult({ args: ["start", "--format", "json"], result: { code: 1, stdout: wrapped("VERIFY_REQUIRED: failed browser checks: webrtc; the profile cannot be used"), stderr: "" } }).event.name, "NBC_VERIFY_FAILED", "VERIFY_REQUIRED is the check itself");
+});
+
+test("a failed browser verification is reported unless the profile's own proxy failed", () => {
+  const verify = describeNbcResult({ args: ["verify", "--profile", "Shop", "--format", "json"], result: { code: 1, stdout: envelope("VERIFY_FAILED", "Browser verification did not pass"), stderr: "" } });
+  assert.equal(verify.event.name, "NBC_VERIFY_FAILED");
+  assert.equal(verify.event.context.nbc_code, "VERIFY_FAILED");
+  assert.equal(describeNbcResult({ args: ["eval", "--format", "json"], result: { code: 1, stdout: envelope("VERIFY_REQUIRED", "VERIFY_REQUIRED: verification is failed, incomplete, or missing"), stderr: "" } }).event.name, "NBC_VERIFY_FAILED");
+  assert.equal(describeNbcResult({ args: ["rotate", "--verify", "--format", "json"], result: { code: 1, stdout: envelope("VERIFY_FAILED", "Proxy country is DE, expected US"), stderr: "" } }).event, null);
+  assert.equal(describeNbcResult({ args: ["verify", "--format", "json"], result: { code: 1, stdout: envelope("VERIFY_FAILED", "lookup verify.nextbrowser.com: no such host"), stderr: "" } }).event, null, "offline");
+});
+
+test("timeouts of commands the user waits on are reported", () => {
+  const timedOut = (args) => describeNbcResult({ args, result: { code: -1, stdout: "", stderr: "Command timed out after 60 seconds." }, outcome: { timedOut: true, signal: "SIGTERM" }, durationMs: 60_012 }).event;
+  const start = timedOut(["--verify-on-start-only", "start", "--profile", "Shop", "--runtime", "camoufox", "--format", "json"]);
+  assert.equal(start.name, "NBC_TIMEOUT");
+  assert.equal(start.message, "nbc start timed out");
+  assert.deepEqual(start.context, { command: "start", exit_code: "-1", runtime: "camoufox", signal: "SIGTERM", duration_ms: "60012" });
+  assert.ok(!JSON.stringify(start).includes("Shop"));
+  for (const args of [["stop", "--format", "json"], ["profiles", "create", "p", "--format", "json"], ["--runtime", "multilogin", "mobile", "profiles", "create", "p", "--json"], ["remote", "--profile", "p", "--format", "json"], ["remote", "close", "id"], ["update"], ["install", "generic", "--format", "json"]]) {
+    assert.equal(timedOut(args)?.name, "NBC_TIMEOUT", args.join(" "));
+  }
+  assert.equal(timedOut(["--verify-on-start-only", "--proxy-safety-file", "", "version", "--help"]).message, "nbc compatibility probe timed out");
+});
+
+test("text-mode failures of commands whose failure the user sees are reported", () => {
+  const failed = (args, stderr, code = 1) => describeNbcResult({ args, result: { code, stdout: "Downloading nbc 0.2.68…\n", stderr } }).event;
+  const update = failed(["update"], "Error: install nbc: unexpected EOF");
+  assert.equal(update.name, "NBC_COMMAND_FAILED");
+  assert.equal(update.message, "nbc update failed (exit 1): Error: install nbc: unexpected EOF");
+  assert.ok(!update.message.includes("Downloading"), "standard output is never copied into a report");
+  assert.equal(failed(["profiles", "requests", "reject", "req-1", "--reason", "not my shop"], "Error: request is already approved").context.command, "profiles requests reject");
+  assert.equal(failed(["remote", "close", "a1b2"], "Error: remote session close failed: 500").context.command, "remote close");
+  assert.equal(failed(["install", "--agent", "codex", "--no-api-key-prompt"], "Error: write skill: permission denied").context.command, "install");
+  const probe = failed(["--verify-on-start-only", "--proxy-safety-file", "", "version", "--help"], "Error: unknown flag: --verify-on-start-only");
+  assert.equal(probe.name, "NBC_INCOMPATIBLE", "an old nbc is what the probe detects, so its usage error counts");
+  assert.match(probe.message, /^nbc compatibility probe failed \(exit 1\): Error: unknown flag/);
+
+  assert.equal(failed(["update"], "Error: Get \"https://github.com/x\": dial tcp: lookup github.com: no such host"), null, "offline");
+  assert.equal(failed(["remote", "close", "a1b2"], "Error: unexpected status 401 Unauthorized"), null, "signed out");
+  assert.equal(failed(["update", "--browser-only"], "Error: unknown flag: --browser-only"), null, "a probe for an older nbc");
+  assert.equal(failed(["skill", "list"], "Error: boom"), null, "other text-mode commands keep exit 1 as nbc's ordinary error");
+});
+
+test("text-mode failures never carry the command's arguments", () => {
+  const key = describeNbcResult({ args: ["config", "set", "--api-key", "nb_live_SECRETKEY123"], result: { code: 1, stdout: "", stderr: "Error: write config: permission denied" } }).event;
+  assert.equal(key.context.command, "config set");
+  assert.ok(!JSON.stringify(key).includes("SECRETKEY"));
+  const reject = describeNbcResult({ args: ["profiles", "requests", "reject", "req-1", "--reason", "Alice's private shop"], result: { code: 1, stdout: "", stderr: "Error: boom" } }).event;
+  assert.ok(!JSON.stringify(reject).includes("Alice"));
+});
+
+test("the proxy countries 401 is reported and folds into one report per launch", (t) => {
+  const result = { code: 1, stdout: envelope("INTERNAL_ERROR", "unexpected status 401 Unauthorized: {\"code\":\"invalid_auth\",\"message\":\"Invalid JWT\"}"), stderr: "" };
+  const first = describeNbcResult({ args: ["proxy", "countries", "--format", "json"], result, durationMs: 412 }).event;
+  const second = describeNbcResult({ args: ["proxy", "countries", "--format", "json"], result, durationMs: 388 }).event;
+  assert.equal(first.name, "INTERNAL_ERROR");
+  assert.equal(first.context.command, "proxy countries");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nbc-fold-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const reporter = createClientErrorReporter({ dir, resolveEndpoint: async () => ({ baseURL: "https://api.test", apiKey: "" }), setTimer: () => null, clearTimer: () => {} });
+  assert.equal(reporter.capture(first), true);
+  assert.equal(reporter.capture(second), true);
+  assert.equal(reporter.queued.length, 1);
+  assert.equal(reporter.queued[0].count, 2);
 });

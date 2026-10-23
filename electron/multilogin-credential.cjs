@@ -1,5 +1,6 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { userError } = require("./user-error.cjs");
 
 const MULTILOGIN_AUTOMATION_TOKEN_URL = "https://api.multilogin.com/workspace/automation_token?expiration_period=no_exp";
 const MULTILOGIN_REQUEST_TIMEOUT_MS = 20_000;
@@ -12,8 +13,8 @@ function normalizeBearerToken(value) {
   if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
     token = token.slice(1, -1).trim();
   }
-  if (!token) throw new Error("Paste the bearer token from Multilogin.");
-  if (token.length > 16_384 || /\s/.test(token)) throw new Error("The Multilogin bearer token has an invalid format.");
+  if (!token) throw userError("Paste the bearer token from Multilogin.");
+  if (token.length > 16_384 || /\s/.test(token)) throw userError("The Multilogin bearer token has an invalid format.");
   return token;
 }
 
@@ -29,11 +30,15 @@ function automationTokenFromResponse(body) {
   return token.trim();
 }
 
+// The status lets error reporting tell an expired or limited token (401, 403)
+// from a Multilogin API that changed.
 function exchangeError(status) {
-  if (status === 401) return new Error("The bearer token expired. Copy a fresh token from Multilogin and try again.");
-  if (status === 403) return new Error("This Multilogin account cannot create automation tokens.");
-  if (status === 400) return new Error("Multilogin rejected the no-expiration token request.");
-  return new Error(`Multilogin token request failed (${status}).`);
+  const messages = {
+    401: "The bearer token expired. Copy a fresh token from Multilogin and try again.",
+    403: "This Multilogin account cannot create automation tokens.",
+    400: "Multilogin rejected the no-expiration token request.",
+  };
+  return Object.assign(new Error(messages[status] || `Multilogin token request failed (${status}).`), { status });
 }
 
 async function exchangeAutomationToken({

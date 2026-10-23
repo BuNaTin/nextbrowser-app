@@ -3,12 +3,15 @@ import { beforeEach, expect, it, vi } from "vitest";
 const bridge = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
 vi.mock("./electronBridge", () => ({ ...bridge, filePathForFile: () => "" }));
 vi.mock("./lib/analytics", () => ({ setAnalyticsUserId: vi.fn(), trackEvent: vi.fn(), trackScreenView: vi.fn(), trackTiming: vi.fn() }));
+const reporting = vi.hoisted(() => ({ reportUserFacingError: vi.fn(), reportUserFacingMessage: vi.fn() }));
+vi.mock("./lib/errorReporting", () => reporting);
 
 beforeEach(() => {
   vi.resetModules();
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() });
   bridge.invoke.mockReset();
   bridge.invoke.mockResolvedValue({ revision: 1 });
+  reporting.reportUserFacingError.mockClear();
 });
 
 function freshAccount() {
@@ -53,6 +56,7 @@ it("creates a default workspace, project, and one profile per toolset without a 
   expect(state.selectedProfile).toBe("Clawbrowser profile");
   const { trackTiming } = await import("./lib/analytics");
   expect(trackTiming).toHaveBeenCalledWith("workspace_auto_setup_completed", expect.any(Number), { profiles_created: 3, profiles_failed: 0 });
+  expect(reporting.reportUserFacingError).not.toHaveBeenCalled();
 });
 
 it("keeps the new workspace usable when optional default profiles cannot be created", async () => {
@@ -72,6 +76,8 @@ it("keeps the new workspace usable when optional default profiles cannot be crea
   expect(state.workspaceSetupAuto).toBe("done");
   const { trackTiming } = await import("./lib/analytics");
   expect(trackTiming).toHaveBeenCalledWith("workspace_auto_setup_completed", expect.any(Number), { profiles_created: 0, profiles_failed: 3 });
+  // Nothing on screen says the defaults are missing, so the report does.
+  expect(reporting.reportUserFacingError).toHaveBeenCalledWith({ surface: "workspace-setup", code: "DEFAULT_PROFILES_PARTLY_FAILED" });
 });
 
 it("never repopulates an existing empty workspace or deleted defaults", async () => {
@@ -218,6 +224,7 @@ it("creates the profiles it can and skips a toolset that fails", async () => {
 
   expect(useStore.getState().workspaces[0].profileNames.slice(3)).toEqual(["Clawbrowser profile 2", "Camoufox profile 2"]);
   expect(useStore.getState().defaultProfilesError).toBeUndefined();
+  expect(reporting.reportUserFacingError).toHaveBeenCalledWith({ surface: "default-profiles", code: "DEFAULT_PROFILES_PARTLY_FAILED" });
   create.mockRestore();
 });
 
